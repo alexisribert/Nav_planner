@@ -101,7 +101,7 @@ colonnes = st.columns(len(points_vol))
 for i, point in enumerate(points_vol):
     with colonnes[i]:
         st.markdown(f"**{point['nom']}**")
-        pax = st.number_input(f"Pilote + Passager(s)", min_value=0.0, value=80.0, step=1.0, key=f"pax_{i}")
+        pax = st.number_input(f"Pilote + Passager(s)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{i}")
         bag = st.number_input(f"Bagages", min_value=0.0, max_value=35.0, value=0.0, step=1.0, key=f"bag_{i}")
         carb = st.number_input(f"Carburant (kg)", min_value=0.0, value=50.0, step=1.0, key=f"carb_{i}")
         
