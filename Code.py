@@ -313,42 +313,11 @@ with tab_centrage:
             if row["CG"] < 0.22 or row["CG"] > 0.46:
                 st.error(f"⚠️ Centrage hors limites absolues à : {row['Etape']}")
 
-def get_current_airac():
-    """Calcule mathématiquement le cycle AIRAC en cours (format YYNN)."""
-    # Date de référence d'un cycle 01 connu (Cycle 2401 a commencé le 25 Janvier 2024)
-    ref_date = datetime(2024, 1, 25)
-    now = datetime.now()
-    
-    # Nombre de cycles de 28 jours écoulés depuis la date de référence
-    cycles_passed = (now - ref_date).days // 28
-    
-    # Date exacte du début du cycle actuel
-    current_cycle_date = ref_date + timedelta(days=cycles_passed * 28)
-    
-    # L'année sur 2 chiffres (YY)
-    yy = current_cycle_date.strftime("%y")
-    
-    # Pour trouver le numéro (NN), on remonte le temps de 28j en 28j 
-    # jusqu'à changer d'année. Le nombre de sauts donne le numéro du cycle.
-    temp_date = current_cycle_date
-    nn = 1
-    while True:
-        temp_date -= timedelta(days=28)
-        if temp_date.year < current_cycle_date.year:
-            break
-        nn += 1
-        
-    return f"{yy}{nn:02d}"
-
-
 # ------------------------------------------
 # ONGLET 3 : CARTE VFR (OpenFlightMaps)
 # ------------------------------------------
 with tab_carte:
     st.subheader("Visualisation de la route")
-    
-    # Calcul 100% automatique du cycle AIRAC
-    AIRAC_CYCLE = get_current_airac() 
     
     if len(coords_vol) > 1:
         route_coords = [(data["lat"], data["lon"]) for data in coords_vol.values()]
@@ -356,20 +325,33 @@ with tab_carte:
         avg_lat = sum(p[0] for p in route_coords) / len(route_coords)
         avg_lon = sum(p[1] for p in route_coords) / len(route_coords)
         
+        # Initialisation de la carte vierge
         m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles=None)
         
-        # FOND DE CARTE OPENFLIGHTMAPS AVEC URL DYNAMIQUE
-        url_ofm = f"https://snapshots.openflightmaps.org/live/{AIRAC_CYCLE}/tiles/world/noninteractive/epsg3857/merged/256/latest/{{z}}/{{x}}/{{y}}.png"
-        
+        # 1. FOND DE CARTE OFM (Relief, routes, villes) - Couche JPG de base
         folium.TileLayer(
-            tiles=url_ofm,
+            tiles="https://nwy-tiles-api.prod.newaydata.com/tiles/{z}/{x}/{y}.jpg?path=latest/base/latest",
             attr='&copy; <a href="https://www.openflightmaps.org/">OpenFlightMaps</a>',
-            name=f'Carte VFR (AIRAC {AIRAC_CYCLE})',
+            name='OFM - Fond Topographique',
             max_zoom=14,
-            min_zoom=6
+            min_zoom=6,
+            overlay=False,
+            control=True
+        ).add_to(m)
+
+        # 2. COUCHE AÉRO OFM (Zones, VOR, Fréquences, Points VFR) - Couche PNG transparente
+        folium.TileLayer(
+            tiles="https://nwy-tiles-api.prod.newaydata.com/tiles/{z}/{x}/{y}.png?path=latest/aero/latest",
+            attr='&copy; OFM Aero',
+            name='OFM - Données Aéronautiques',
+            max_zoom=14,
+            min_zoom=6,
+            overlay=True,
+            control=True,
+            transparent=True
         ).add_to(m)
         
-        # Tracé de la ligne de la route
+        # Tracé de la ligne de la route (Magenta aéronautique)
         folium.PolyLine(
             route_coords, 
             color="#FF00FF", 
@@ -398,9 +380,10 @@ with tab_carte:
                 icon=folium.Icon(color=couleur, icon=icone, prefix='fa')
             ).add_to(m)
             
-        # Afficher dans le menu en haut à droite quel AIRAC est en train de tourner
+        # Affiche le menu des couches en haut à droite
         folium.LayerControl(collapsed=False).add_to(m)
         
+        # Rendu dans Streamlit
         st_folium(m, width=1200, height=600, returned_objects=[])
         
     else:
