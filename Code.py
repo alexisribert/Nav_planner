@@ -5,8 +5,12 @@ import io
 from datetime import datetime
 
 # ==========================================
-# 1. DONNÉES DES AVIONS
+# 1. DONNÉES DES AVIONS & CARBURANT
 # ==========================================
+# Constantes Carburant
+DENSITE_AVGAS = 0.72  # kg/L pour l'AVGAS 100 LL
+CAPACITE_MAX_CARBURANT_L = 118.0  # Litres
+
 # Enveloppe commune aux HR200-120
 # Limites verticales à 0.22 et 0.46, fermée en bas à 500 kg
 ENVELOPPE_CG = [0.22, 0.22, 0.32, 0.46, 0.46, 0.22]
@@ -91,8 +95,8 @@ else:
     points_vol.append({"nom": f"Arrivée ({arr})"})
 
 st.markdown("---")
-st.subheader("Masses à chaque étape (en kg)")
-st.info("💡 Astuce : Sur le HR200, la masse de l'essence est d'environ 0.72 kg/L.")
+st.subheader("Masses et chargement à chaque étape")
+st.info(f"ℹ️ Le carburant est saisi en Litres (capacité max : {CAPACITE_MAX_CARBURANT_L} L). La conversion en masse est automatique (AVGAS 100 LL = {DENSITE_AVGAS} kg/L).")
 
 # Récupération des masses pour chaque point
 resultats = []
@@ -101,12 +105,17 @@ colonnes = st.columns(len(points_vol))
 for i, point in enumerate(points_vol):
     with colonnes[i]:
         st.markdown(f"**{point['nom']}**")
-        pax = st.number_input(f"Pilote + Passager(s)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{i}")
-        bag = st.number_input(f"Bagages", min_value=0.0, max_value=35.0, value=0.0, step=1.0, key=f"bag_{i}")
-        carb = st.number_input(f"Carburant (kg)", min_value=0.0, value=50.0, step=1.0, key=f"carb_{i}")
+        pax = st.number_input(f"Pilote + Passager(s) (kg)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{i}")
+        bag = st.number_input(f"Bagages (kg)", min_value=0.0, max_value=35.0, value=0.0, step=1.0, key=f"bag_{i}")
         
-        masse, cg = calculer_centrage(avion_choisi, pax, bag, carb)
-        resultats.append({"Etape": point['nom'], "Masse": masse, "CG": cg})
+        # Saisie en Litres avec limite à 118 L
+        carb_litres = st.number_input(f"Carburant (L)", min_value=0.0, max_value=CAPACITE_MAX_CARBURANT_L, value=70.0, step=1.0, key=f"carb_{i}")
+        
+        # Conversion L -> kg
+        carb_kg = carb_litres * DENSITE_AVGAS
+        
+        masse, cg = calculer_centrage(avion_choisi, pax, bag, carb_kg)
+        resultats.append({"Etape": point['nom'], "Masse": masse, "CG": cg, "Carb_L": carb_litres})
 
 # ==========================================
 # 4. GRAPHIQUE ET RÉSULTATS
@@ -180,7 +189,12 @@ with col_graph:
     )
 
 with col_tableau:
-    st.dataframe(df_res.style.format({"Masse": "{:.1f} kg", "CG": "{:.3f} m"}))
+    # On ajoute la colonne des litres dans l'affichage final pour vérification
+    st.dataframe(df_res[["Etape", "Masse", "CG", "Carb_L"]].style.format({
+        "Masse": "{:.1f} kg", 
+        "CG": "{:.3f} m",
+        "Carb_L": "{:.1f} L"
+    }))
 
     # Vérifications et alertes de sécurité
     for i, row in df_res.iterrows():
