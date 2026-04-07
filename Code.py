@@ -96,7 +96,7 @@ else:
 
 st.markdown("---")
 st.subheader("Masses et chargement à chaque étape")
-st.info(f"Capacité max carburant : {CAPACITE_MAX_CARBURANT_L} L). Densité AVGAS 100 LL = {DENSITE_AVGAS} kg/L.")
+st.info(f"Capacité max carburant : {CAPACITE_MAX_CARBURANT_L} L, Densité AVGAS 100 LL = {DENSITE_AVGAS} kg/L.")
 
 # Récupération des masses pour chaque point
 resultats = []
