@@ -247,7 +247,7 @@ with tab_centrage:
     # Liste pour retenir le carburant restant à chaque étape
     carb_restant_list = []
 
-    for i, pt_nom in enumerate(points_noms):
+        for i, pt_nom in enumerate(points_noms):
         with colonnes_centrage[i]:
             st.markdown(f"**{pt_nom}**")
             pax = st.number_input(f"Pilote + Pax (kg)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{i}")
@@ -266,8 +266,8 @@ with tab_centrage:
                 carb_litres = max(0.0, carb_restant_list[-1] - conso_litres)
                 carb_restant_list.append(carb_litres)
                 
-                # Affichage en lecture seule (grisé)
-                st.text_input(f"Carburant calculé (L)", value=f"{carb_litres:.1f}", disabled=True, key=f"carb_auto_{i}")
+                # CORRECTION ICI : Affichage en lecture seule (grisé) avec clé dynamique
+                st.text_input(f"Carburant calculé (L)", value=f"{carb_litres:.1f}", disabled=True, key=f"carb_auto_{i}_{carb_litres:.1f}")
             
             # Calcul du centrage
             carb_kg = carb_litres * DENSITE_AVGAS
