@@ -247,7 +247,7 @@ with tab_centrage:
     # Liste pour retenir le carburant restant à chaque étape
     carb_restant_list = []
 
-        for i, pt_nom in enumerate(points_noms):
+    for i, pt_nom in enumerate(points_noms):
         with colonnes_centrage[i]:
             st.markdown(f"**{pt_nom}**")
             pax = st.number_input(f"Pilote + Pax (kg)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{i}")
