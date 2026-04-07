@@ -6,6 +6,8 @@ import math
 from datetime import datetime
 import folium
 from streamlit_folium import st_folium
+from datetime import datetime, timedelta
+
 
 
 # ==========================================
@@ -311,41 +313,63 @@ with tab_centrage:
             if row["CG"] < 0.22 or row["CG"] > 0.46:
                 st.error(f"⚠️ Centrage hors limites absolues à : {row['Etape']}")
 
+def get_current_airac():
+    """Calcule mathématiquement le cycle AIRAC en cours (format YYNN)."""
+    # Date de référence d'un cycle 01 connu (Cycle 2401 a commencé le 25 Janvier 2024)
+    ref_date = datetime(2024, 1, 25)
+    now = datetime.now()
+    
+    # Nombre de cycles de 28 jours écoulés depuis la date de référence
+    cycles_passed = (now - ref_date).days // 28
+    
+    # Date exacte du début du cycle actuel
+    current_cycle_date = ref_date + timedelta(days=cycles_passed * 28)
+    
+    # L'année sur 2 chiffres (YY)
+    yy = current_cycle_date.strftime("%y")
+    
+    # Pour trouver le numéro (NN), on remonte le temps de 28j en 28j 
+    # jusqu'à changer d'année. Le nombre de sauts donne le numéro du cycle.
+    temp_date = current_cycle_date
+    nn = 1
+    while True:
+        temp_date -= timedelta(days=28)
+        if temp_date.year < current_cycle_date.year:
+            break
+        nn += 1
+        
+    return f"{yy}{nn:02d}"
+
+
 # ------------------------------------------
-# ONGLET 3 : CARTE VFR
+# ONGLET 3 : CARTE VFR (OpenFlightMaps)
 # ------------------------------------------
 with tab_carte:
-    st.subheader("Visualisation de la route sur carte OACI")
+    st.subheader("Visualisation de la route")
     
-    # On vérifie qu'on a bien des coordonnées à afficher
+    # Calcul 100% automatique du cycle AIRAC
+    AIRAC_CYCLE = get_current_airac() 
+    
     if len(coords_vol) > 1:
         route_coords = [(data["lat"], data["lon"]) for data in coords_vol.values()]
         
-        # Calcul du centre de la carte
         avg_lat = sum(p[0] for p in route_coords) / len(route_coords)
         avg_lon = sum(p[1] for p in route_coords) / len(route_coords)
         
-        # Création de la carte de base (tiles=None pour ne pas charger OpenStreetMap par défaut)
         m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles=None)
         
-        # FOND DE CARTE OACI GÉOPORTAIL (SIA / IGN)
-        url_oaci = (
-            "https://data.geopf.fr/wmts?"
-            "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&"
-            "LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN-OACI&"
-            "STYLE=normal&FORMAT=image/jpeg&"
-            "TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
-        )
+        # FOND DE CARTE OPENFLIGHTMAPS AVEC URL DYNAMIQUE
+        url_ofm = f"https://snapshots.openflightmaps.org/live/{AIRAC_CYCLE}/tiles/world/noninteractive/epsg3857/merged/256/latest/{{z}}/{{x}}/{{y}}.png"
         
         folium.TileLayer(
-            tiles=url_oaci,
-            attr='&copy; <a href="https://www.ign.fr/">IGN</a> - SIA',
-            name='Carte VFR OACI',
-            max_zoom=11,   # La carte OACI n'existe pas en zoom trop rapproché
-            min_zoom=6     # Ni en zoom trop éloigné
+            tiles=url_ofm,
+            attr='&copy; <a href="https://www.openflightmaps.org/">OpenFlightMaps</a>',
+            name=f'Carte VFR (AIRAC {AIRAC_CYCLE})',
+            max_zoom=14,
+            min_zoom=6
         ).add_to(m)
         
-        # Tracé de la ligne de la route (Magenta pour imiter le GPS)
+        # Tracé de la ligne de la route
         folium.PolyLine(
             route_coords, 
             color="#FF00FF", 
@@ -361,14 +385,11 @@ with tab_carte:
             lon = data["lon"]
             
             if i == 0:
-                couleur = "green"
-                icone = "plane-departure"
+                couleur, icone = "green", "plane-departure"
             elif i == len(coords_vol) - 1:
-                couleur = "red"
-                icone = "plane-arrival"
+                couleur, icone = "red", "plane-arrival"
             else:
-                couleur = "blue"
-                icone = "map-marker"
+                couleur, icone = "blue", "map-marker"
                 
             folium.Marker(
                 location=[lat, lon],
@@ -377,9 +398,10 @@ with tab_carte:
                 icon=folium.Icon(color=couleur, icon=icone, prefix='fa')
             ).add_to(m)
             
-        # Affichage dynamique dans Streamlit
+        # Afficher dans le menu en haut à droite quel AIRAC est en train de tourner
+        folium.LayerControl(collapsed=False).add_to(m)
+        
         st_folium(m, width=1200, height=600, returned_objects=[])
         
     else:
         st.warning("Veuillez configurer au moins un départ et une arrivée dans les paramètres du vol.")
-
