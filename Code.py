@@ -10,6 +10,9 @@ from datetime import datetime
 # ==========================================
 DENSITE_AVGAS = 0.72  
 CAPACITE_MAX_CARBURANT_L = 118.0  
+CONSO_BASE_L_H = 25.0
+MARGE_CONSO = 1.10 # +10% de marge de sécurité
+CONSO_EFFECTIVE_L_H = CONSO_BASE_L_H * MARGE_CONSO
 
 ENVELOPPE_CG = [0.22, 0.22, 0.32, 0.46, 0.46, 0.22]
 ENVELOPPE_MASSE = [500, 580, 780, 780, 500, 500]
@@ -18,8 +21,7 @@ AIRCRAFT_DATA = {
     "D-EVTL": {
         "masse_vide": 557.58, "bras_vide": 0.276,   
         "bras": {"pilote_pax": 0.45, "carburant": 1.1, "bagages": 1.2},
-        "masse_max": 780, "vp_croisiere_kt": 100, 
-        # Table de déviations (Cm -> d) neutre pour le TL
+        "masse_max": 780, "vp_croisiere_kmh": 175, 
         "table_deviation": {
             0: 0, 30: 0, 60: 0, 90: 0, 120: 0, 150: 0, 
             180: 0, 210: 0, 240: 0, 270: 0, 300: 0, 330: 0, 360: 0
@@ -28,8 +30,7 @@ AIRCRAFT_DATA = {
     "F-HNBB": {
         "masse_vide": 541.90, "bras_vide": 0.261,  
         "bras": {"pilote_pax": 0.45, "carburant": 1.1, "bagages": 1.2},
-        "masse_max": 780, "vp_croisiere_kt": 100,
-        # Table de déviations réelles (d = Cm - Cc)
+        "masse_max": 780, "vp_croisiere_kmh": 175,
         "table_deviation": {
             0: 0, 30: -1, 60: 0, 90: -1, 120: -2, 150: -1,
             180: 1, 210: 0, 240: 0, 270: 1, 300: 0, 330: 1, 360: 0 
@@ -85,10 +86,7 @@ def calculer_triangle_vitesses(rv_deg, vp_kt, vent_dir_deg, vent_force_kt):
     return cv_deg, derive_deg, vs_kt
 
 def interpoler_cap_compas(cm, table_deviation):
-    """Calcule le Cap Compas (Cc) en interpolant la déviation (d)"""
     cm_modulo = cm % 360
-    
-    # Pour gérer la boucle à 360
     if cm_modulo == 0 and cm > 0:
         cm_cible = 360
     else:
@@ -99,18 +97,14 @@ def interpoler_cap_compas(cm, table_deviation):
     if cm_cible in caps:
         deviation = table_deviation[cm_cible]
     else:
-        # Recherche des deux bornes les plus proches
         for i in range(len(caps) - 1):
             if caps[i] < cm_cible < caps[i+1]:
                 cm1, cm2 = caps[i], caps[i+1]
                 dev1, dev2 = table_deviation[cm1], table_deviation[cm2]
-                
-                # Interpolation linéaire sur la déviation
                 fraction = (cm_cible - cm1) / (cm2 - cm1)
                 deviation = dev1 + fraction * (dev2 - dev1)
                 break
                 
-    # Cc = Cm - d
     cc_final = (cm - deviation) % 360
     return cc_final
 
@@ -153,26 +147,129 @@ else:
     arr = st.sidebar.text_input("Arrivée (OACI)", "LFQQ").upper()
     points_noms.append(arr)
 
-# --- ONGLETS ---
-tab_centrage, tab_nav, tab_carte = st.tabs(["⚖️ Devis de Centrage", "🗺️ Log de Navigation", "📍 Carte VFR"])
+# --- ONGLETS (Nav en premier pour calculer les temps de vol) ---
+tab_nav, tab_centrage, tab_carte = st.tabs(["🗺️ Log de Navigation", "⚖️ Devis de Centrage", "📍 Carte VFR"])
+
+# Liste pour stocker le temps de vol de chaque branche (sera utilisée par le centrage)
+temps_branches_min = []
 
 # ------------------------------------------
-# ONGLET 1 : DEVIS DE CENTRAGE
+# ONGLET 1 : LOG DE NAVIGATION
+# ------------------------------------------
+with tab_nav:
+    col_v, col_dec = st.columns(2)
+    vp_nav_kmh = col_v.number_input("Vitesse Propre (Vp) en km/h", value=AIRCRAFT_DATA[avion_choisi]["vp_croisiere_kmh"])
+    declinaison = col_dec.number_input("Déclinaison Magnétique (° E/W, ex: -1 pour 1°W)", value=0.0)
+    
+    # Conversion Vp en noeuds pour les calculs aéro
+    vp_nav_kt = vp_nav_kmh / 1.852 
+    
+    st.markdown("### 📍 Coordonnées des points de vol")
+    
+    coords_vol = {}
+    cols_coords = st.columns(len(points_noms))
+    for i, pt_nom in enumerate(points_noms):
+        with cols_coords[i]:
+            st.markdown(f"**{pt_nom}**")
+            
+            lat_defaut, lon_defaut = 0.0, 0.0
+            if pt_nom in DB_AERODROMES:
+                lat_defaut = DB_AERODROMES[pt_nom]["latitude_deg"]
+                lon_defaut = DB_AERODROMES[pt_nom]["longitude_deg"]
+                st.success("OACI Trouvé")
+            else:
+                st.warning("Saisie manuelle")
+            
+            lat = st.number_input("Latitude (°)", value=lat_defaut, format="%.5f", key=f"lat_{i}_{pt_nom}")
+            lon = st.number_input("Longitude (°)", value=lon_defaut, format="%.5f", key=f"lon_{i}_{pt_nom}")
+            coords_vol[i] = {"nom": pt_nom, "lat": lat, "lon": lon}
+
+    st.markdown("---")
+    st.markdown("### 🧭 Calcul des Branches")
+    
+    log_nav_data = []
+    
+    for i in range(len(points_noms) - 1):
+        pt_dep = coords_vol[i]
+        pt_arr = coords_vol[i+1]
+        
+        dist_calc, rv_calc = calculer_distance_et_cap(pt_dep["lat"], pt_dep["lon"], pt_arr["lat"], pt_arr["lon"])
+        
+        with st.expander(f"Branche {i+1} : {pt_dep['nom']} ➔ {pt_arr['nom']}", expanded=True):
+            col1, col2 = st.columns(2)
+            
+            if dist_calc == 0:
+                st.info("Point identique ou vol local détecté. Entrez la durée du vol manuellement.")
+                temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0, value=45, key=f"tps_local_{i}")
+                vent_dir, vent_force, cv, cm, cc, vs = 0, 0, 0, 0, 0, 0
+            else:
+                st.write(f"📏 **Route Vraie (Rv) : {int(rv_calc)}°** | **Distance : {round(dist_calc, 1)} Nm**")
+                vent_dir = col1.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, key=f"w_dir_{i}")
+                vent_force = col2.number_input(f"Vent Force (kt)", min_value=0, value=0, key=f"w_force_{i}")
+                
+                cv, derive, vs = calculer_triangle_vitesses(rv_calc, vp_nav_kt, vent_dir, vent_force)
+                cm = (cv - declinaison) % 360
+                
+                table_dev_avion = AIRCRAFT_DATA[avion_choisi]["table_deviation"]
+                cc = interpoler_cap_compas(cm, table_dev_avion)
+                
+                temps_vol_min = (dist_calc / vs) * 60 if vs > 0 else 0
+            
+            # On stocke le temps pour le calcul du carburant dans le centrage
+            temps_branches_min.append(temps_vol_min)
+            
+            log_nav_data.append({
+                "De": pt_dep["nom"], "Vers": pt_arr["nom"],
+                "Rv (°)": int(rv_calc) if dist_calc > 0 else "-", 
+                "Dist (Nm)": round(dist_calc, 1),
+                "Vent": f"{int(vent_dir)}° / {int(vent_force)}kt" if dist_calc > 0 else "-",
+                "Cv (°)": int(cv) if dist_calc > 0 else "-", 
+                "Cm (°)": int(cm) if dist_calc > 0 else "-", 
+                "Cc (°)": int(cc) if dist_calc > 0 else "-",
+                "Vs (kt)": int(vs) if dist_calc > 0 else "-", 
+                "Temps (min)": int(temps_vol_min)
+            })
+            
+    st.markdown("#### Tableau de Marche (Log de Nav)")
+    df_log = pd.DataFrame(log_nav_data)
+    st.dataframe(df_log, use_container_width=True)
+
+# ------------------------------------------
+# ONGLET 2 : DEVIS DE CENTRAGE
 # ------------------------------------------
 with tab_centrage:
     st.subheader("Masses et chargement")
-    st.info(f"Capacité max : {CAPACITE_MAX_CARBURANT_L} L. Densité : {DENSITE_AVGAS} kg/L.")
+    st.info(f"Le carburant aux étapes intermédiaires est calculé automatiquement d'après le Log de Nav (Conso {CONSO_BASE_L_H} L/h + marge, soit {CONSO_EFFECTIVE_L_H:.1f} L/h).")
     
     resultats_centrage = []
     colonnes_centrage = st.columns(len(points_noms))
+    
+    # Liste pour retenir le carburant restant à chaque étape
+    carb_restant_list = []
 
     for i, pt_nom in enumerate(points_noms):
         with colonnes_centrage[i]:
             st.markdown(f"**{pt_nom}**")
             pax = st.number_input(f"Pilote + Pax (kg)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{i}")
             bag = st.number_input(f"Bagages (kg)", min_value=0.0, max_value=35.0, value=0.0, step=1.0, key=f"bag_{i}")
-            carb_litres = st.number_input(f"Carburant (L)", min_value=0.0, max_value=CAPACITE_MAX_CARBURANT_L, value=70.0, step=1.0, key=f"carb_{i}")
             
+            # Carburant : Saisie manuelle uniquement au départ, calculé ensuite
+            if i == 0:
+                carb_litres = st.number_input(f"Carburant (L)", min_value=0.0, max_value=CAPACITE_MAX_CARBURANT_L, value=70.0, step=1.0, key=f"carb_{i}")
+                carb_restant_list.append(carb_litres)
+            else:
+                # Consommation sur la branche précédente
+                temps_etape_precedente = temps_branches_min[i-1]
+                conso_litres = (temps_etape_precedente / 60.0) * CONSO_EFFECTIVE_L_H
+                
+                # Mise à jour du carburant restant (sans descendre sous zéro)
+                carb_litres = max(0.0, carb_restant_list[-1] - conso_litres)
+                carb_restant_list.append(carb_litres)
+                
+                # Affichage en lecture seule (grisé)
+                st.text_input(f"Carburant calculé (L)", value=f"{carb_litres:.1f}", disabled=True, key=f"carb_auto_{i}")
+            
+            # Calcul du centrage
             carb_kg = carb_litres * DENSITE_AVGAS
             masse, cg = calculer_centrage(avion_choisi, pax, bag, carb_kg)
             resultats_centrage.append({"Etape": pt_nom, "Masse": masse, "CG": cg})
@@ -210,74 +307,6 @@ with tab_centrage:
                 st.error(f"⚠️ Dépassement masse max à : {row['Etape']}")
             if row["CG"] < 0.22 or row["CG"] > 0.46:
                 st.error(f"⚠️ Centrage hors limites absolues à : {row['Etape']}")
-
-# ------------------------------------------
-# ONGLET 2 : LOG DE NAVIGATION
-# ------------------------------------------
-with tab_nav:
-    col_v, col_dec = st.columns(2)
-    vp_nav = col_v.number_input("Vitesse Propre (Vp) en kt", value=AIRCRAFT_DATA[avion_choisi]["vp_croisiere_kt"])
-    declinaison = col_dec.number_input("Déclinaison Magnétique (° E/W, ex: -1 pour 1°W)", value=0.0)
-    
-    st.markdown("### 📍 Coordonnées des points de vol")
-    
-    coords_vol = {}
-    cols_coords = st.columns(len(points_noms))
-    for i, pt_nom in enumerate(points_noms):
-        with cols_coords[i]:
-            st.markdown(f"**{pt_nom}**")
-            
-            lat_defaut, lon_defaut = 0.0, 0.0
-            if pt_nom in DB_AERODROMES:
-                lat_defaut = DB_AERODROMES[pt_nom]["latitude_deg"]
-                lon_defaut = DB_AERODROMES[pt_nom]["longitude_deg"]
-                st.success("OACI Trouvé")
-            else:
-                st.warning("Saisie manuelle")
-            
-            lat = st.number_input("Latitude (°)", value=lat_defaut, format="%.5f", key=f"lat_{i}_{pt_nom}")
-            lon = st.number_input("Longitude (°)", value=lon_defaut, format="%.5f", key=f"lon_{i}_{pt_nom}")
-            coords_vol[i] = {"nom": pt_nom, "lat": lat, "lon": lon}
-
-    st.markdown("---")
-    st.markdown("### 🧭 Calcul des Branches")
-    
-    log_nav_data = []
-    
-    for i in range(len(points_noms) - 1):
-        pt_dep = coords_vol[i]
-        pt_arr = coords_vol[i+1]
-        
-        dist_calc, rv_calc = calculer_distance_et_cap(pt_dep["lat"], pt_dep["lon"], pt_arr["lat"], pt_arr["lon"])
-        
-        with st.expander(f"Branche {i+1} : {pt_dep['nom']} ➔ {pt_arr['nom']}", expanded=True):
-            col1, col2 = st.columns(2)
-            st.write(f"📏 **Route Vraie (Rv) : {int(rv_calc)}°** | **Distance : {round(dist_calc, 1)} Nm**")
-            
-            vent_dir = col1.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, key=f"w_dir_{i}")
-            vent_force = col2.number_input(f"Vent Force (kt)", min_value=0, value=0, key=f"w_force_{i}")
-            
-            # --- CALCULS EN CASCADE ---
-            cv, derive, vs = calculer_triangle_vitesses(rv_calc, vp_nav, vent_dir, vent_force)
-            cm = (cv - declinaison) % 360
-            
-            # Calcul du Cap Compas interpolé
-            table_dev_avion = AIRCRAFT_DATA[avion_choisi]["table_deviation"]
-            cc = interpoler_cap_compas(cm, table_dev_avion)
-            
-            temps_vol_min = (dist_calc / vs) * 60 if vs > 0 else 0
-            
-            log_nav_data.append({
-                "De": pt_dep["nom"], "Vers": pt_arr["nom"],
-                "Rv (°)": int(rv_calc), "Dist (Nm)": round(dist_calc, 1),
-                "Vent": f"{int(vent_dir)}° / {int(vent_force)}kt",
-                "Cv (°)": int(cv), "Cm (°)": int(cm), "Cc (°)": int(cc),
-                "Vs (kt)": int(vs), "Temps (min)": int(temps_vol_min)
-            })
-            
-    st.markdown("#### Tableau de Marche (Log de Nav)")
-    df_log = pd.DataFrame(log_nav_data)
-    st.dataframe(df_log, use_container_width=True)
 
 # ------------------------------------------
 # ONGLET 3 : CARTE VFR
