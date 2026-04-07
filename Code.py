@@ -202,6 +202,7 @@ with tab_nav:
     for i, pt_nom in enumerate(points_noms):
         with cols_coords[i]:
             st.markdown(f"**{pt_nom}**")
+            
             # Chercher dans la base de données OACI
             lat_defaut, lon_defaut = 0.0, 0.0
             if pt_nom in DB_AERODROMES:
@@ -210,9 +211,11 @@ with tab_nav:
                 st.success("OACI Trouvé")
             else:
                 st.warning("Saisie manuelle")
-                
-            lat = st.number_input("Latitude (°)", value=lat_defaut, format="%.5f", key=f"lat_{i}")
-            lon = st.number_input("Longitude (°)", value=lon_defaut, format="%.5f", key=f"lon_{i}")
+            
+            # ASTUCE ICI : On ajoute le pt_nom dans la clé !
+            lat = st.number_input("Latitude (°)", value=lat_defaut, format="%.5f", key=f"lat_{i}_{pt_nom}")
+            lon = st.number_input("Longitude (°)", value=lon_defaut, format="%.5f", key=f"lon_{i}_{pt_nom}")
+            
             coords_vol[i] = {"nom": pt_nom, "lat": lat, "lon": lon}
 
     st.markdown("---")
