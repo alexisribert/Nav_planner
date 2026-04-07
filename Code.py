@@ -57,7 +57,7 @@ def calculer_centrage(avion, masse_pilotes, masse_bagages, masse_carburant):
 # 3. INTERFACE STREAMLIT
 # ==========================================
 st.set_page_config(page_title="Prépa Nav VFR - HR200", layout="wide")
-st.title("🛩️ Calcul de Centrage - HR200-120")
+st.title("Calcul de Centrage - HR200-120")
 
 # --- CHOIX DE L'AVION ---
 avion_choisi = st.sidebar.selectbox("Sélectionnez l'avion", list(AIRCRAFT_DATA.keys()))
@@ -112,7 +112,7 @@ for i, point in enumerate(points_vol):
 # 4. GRAPHIQUE ET RÉSULTATS
 # ==========================================
 st.markdown("---")
-st.subheader("📊 Graphe d'enveloppe de centrage")
+st.subheader("Enveloppe de centrage")
 
 fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -173,7 +173,7 @@ with col_graph:
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=300)
     
     st.download_button(
-        label="📥 Télécharger le graphique (PNG)",
+        label="Télécharger le graphique (PNG)",
         data=buf.getvalue(),
         file_name=f"Centrage_{avion_choisi}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
         mime="image/png"
