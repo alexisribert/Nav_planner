@@ -4,6 +4,9 @@ import pandas as pd
 import io
 import math
 from datetime import datetime
+import folium
+from streamlit_folium import st_folium
+
 
 # ==========================================
 # 1. DONNÉES DES AVIONS & CARBURANT
@@ -312,5 +315,71 @@ with tab_centrage:
 # ONGLET 3 : CARTE VFR
 # ------------------------------------------
 with tab_carte:
-    st.subheader("Visualisation du trajet")
-    st.info("Ici apparaîtra la carte interactive.")
+    st.subheader("Visualisation de la route sur carte OACI")
+    
+    # On vérifie qu'on a bien des coordonnées à afficher
+    if len(coords_vol) > 1:
+        route_coords = [(data["lat"], data["lon"]) for data in coords_vol.values()]
+        
+        # Calcul du centre de la carte
+        avg_lat = sum(p[0] for p in route_coords) / len(route_coords)
+        avg_lon = sum(p[1] for p in route_coords) / len(route_coords)
+        
+        # Création de la carte de base (tiles=None pour ne pas charger OpenStreetMap par défaut)
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles=None)
+        
+        # FOND DE CARTE OACI GÉOPORTAIL (SIA / IGN)
+        url_oaci = (
+            "https://data.geopf.fr/wmts?"
+            "SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&"
+            "LAYER=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN-OACI&"
+            "STYLE=normal&FORMAT=image/jpeg&"
+            "TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"
+        )
+        
+        folium.TileLayer(
+            tiles=url_oaci,
+            attr='&copy; <a href="https://www.ign.fr/">IGN</a> - SIA',
+            name='Carte VFR OACI',
+            max_zoom=11,   # La carte OACI n'existe pas en zoom trop rapproché
+            min_zoom=6     # Ni en zoom trop éloigné
+        ).add_to(m)
+        
+        # Tracé de la ligne de la route (Magenta pour imiter le GPS)
+        folium.PolyLine(
+            route_coords, 
+            color="#FF00FF", 
+            weight=5, 
+            opacity=0.9,
+            dash_array="10"
+        ).add_to(m)
+        
+        # Ajout des marqueurs pour chaque point
+        for i, (idx, data) in enumerate(coords_vol.items()):
+            pt_nom = data["nom"]
+            lat = data["lat"]
+            lon = data["lon"]
+            
+            if i == 0:
+                couleur = "green"
+                icone = "plane-departure"
+            elif i == len(coords_vol) - 1:
+                couleur = "red"
+                icone = "plane-arrival"
+            else:
+                couleur = "blue"
+                icone = "map-marker"
+                
+            folium.Marker(
+                location=[lat, lon],
+                popup=f"<b>{pt_nom}</b><br>Lat: {lat:.4f}<br>Lon: {lon:.4f}",
+                tooltip=pt_nom,
+                icon=folium.Icon(color=couleur, icon=icone, prefix='fa')
+            ).add_to(m)
+            
+        # Affichage dynamique dans Streamlit
+        st_folium(m, width=1200, height=600, returned_objects=[])
+        
+    else:
+        st.warning("Veuillez configurer au moins un départ et une arrivée dans les paramètres du vol.")
+
