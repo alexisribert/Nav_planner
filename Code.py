@@ -5,6 +5,8 @@ import math
 import uuid
 import folium
 from streamlit_folium import st_folium
+from datetime import datetime
+import pygeomag
 
 # ==========================================
 # 1. DONNÉES DES AVIONS & CARBURANT
@@ -48,11 +50,9 @@ def charger_base_aerodromes():
 DB_AERODROMES = charger_base_aerodromes()
 
 def create_point(nom, lat, lon):
-    """Crée un dictionnaire de point avec un ID unique pour sécuriser le Session State."""
     return {"id": str(uuid.uuid4()), "nom": nom, "lat": lat, "lon": lon}
 
 def resolve_oaci(oaci):
-    """Cherche l'OACI, renvoie des coordonnées nulles si inconnu."""
     if oaci in DB_AERODROMES:
         return create_point(oaci, DB_AERODROMES[oaci]["latitude_deg"], DB_AERODROMES[oaci]["longitude_deg"])
     return create_point(oaci if oaci else "WPT", 0.0, 0.0)
@@ -99,6 +99,19 @@ def interpoler_cap_compas(cm, table_deviation):
                 break
     return (cm - deviation) % 360
 
+def calculer_declinaison(lat, lon):
+    """Calcule la déclinaison magnétique exacte via le modèle géomagnétique WMM"""
+    try:
+        geo_mag = pygeomag.GeoMag()
+        now = datetime.now()
+        # L'API a besoin de l'année au format décimal (ex: 2024.3)
+        annee_decimale = now.year + (now.timetuple().tm_yday / 365.25)
+        # Alt = 0 (Niveau de la mer, la différence est négligeable pour le VFR)
+        result = geo_mag.calculate(glat=lat, glon=lon, alt=0, time=annee_decimale)
+        return result.d
+    except Exception:
+        return 0.0 # En cas d'erreur, on part du principe qu'elle est nulle.
+
 def calculer_centrage(avion, masse_pilotes, masse_bagages, masse_carburant):
     data = AIRCRAFT_DATA[avion]
     masse_totale = data["masse_vide"] + masse_pilotes + masse_bagages + masse_carburant
@@ -113,7 +126,6 @@ def calculer_centrage(avion, masse_pilotes, masse_bagages, masse_carburant):
 # ==========================================
 st.set_page_config(page_title="EFB VFR - HR200", layout="wide")
 
-# Initialisation de la mémoire pour conserver la route même quand on change d'onglet
 if "route" not in st.session_state:
     st.session_state.route = [resolve_oaci("LFQQ"), resolve_oaci("LFQQ")]
 if "last_map_added" not in st.session_state:
@@ -153,15 +165,14 @@ if st.sidebar.button("🗑️ Vider la route (Repartir à zéro)", use_container
 # ==========================================
 tab_nav, tab_carte, tab_centrage = st.tabs(["🗺️ Log de Navigation", "📍 Carte Interactive", "⚖️ Devis de Centrage"])
 
-temps_branches_min = [] # Pour stocker les temps de vol pour le centrage
+temps_branches_min = [] 
 
 # ------------------------------------------
 # ONGLET 1 : LOG DE NAVIGATION
 # ------------------------------------------
 with tab_nav:
-    col_v, col_dec = st.columns(2)
-    vp_nav_kmh = col_v.number_input("Vitesse Propre (Vp) en km/h", value=AIRCRAFT_DATA[avion_choisi]["vp_croisiere_kmh"])
-    declinaison = col_dec.number_input("Déclinaison Magnétique (° E/W, ex: -1 pour 1°W)", value=0.0)
+    # On a supprimé le champ de déclinaison manuelle, on garde juste la vitesse propre
+    vp_nav_kmh = st.number_input("Vitesse Propre (Vp) en km/h", value=AIRCRAFT_DATA[avion_choisi]["vp_croisiere_kmh"])
     vp_nav_kt = vp_nav_kmh / 1.852 
     
     st.markdown("### 📍 Éditeur de la route")
@@ -169,7 +180,6 @@ with tab_nav:
     if len(st.session_state.route) == 0:
         st.warning("La route est vide. Utilisez le menu de gauche pour l'initialiser.")
     else:
-        # Affichage des points sous forme de cartes modifiables (3 par ligne)
         for i in range(0, len(st.session_state.route), 3):
             cols = st.columns(3)
             for j in range(3):
@@ -178,7 +188,6 @@ with tab_nav:
                     with cols[j]:
                         with st.container(border=True):
                             st.markdown(f"**Étape {i+j+1}**")
-                            # Si on modifie ici, le session state est mis à jour
                             n_nom = st.text_input("Nom", value=pt["nom"], key=f"nom_{pt['id']}")
                             n_lat = st.number_input("Lat", value=pt["lat"], format="%.5f", key=f"lat_{pt['id']}")
                             n_lon = st.number_input("Lon", value=pt["lon"], format="%.5f", key=f"lon_{pt['id']}")
@@ -207,14 +216,24 @@ with tab_nav:
             if dist_calc == 0:
                 st.info("Vol local détecté (Distance 0). Entrez la durée du vol manuellement.")
                 temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0, value=45, key=f"tps_local_{pt_dep['id']}")
-                vent_dir, vent_force, cv, cm, cc, vs = 0, 0, 0, 0, 0, 0
+                vent_dir, vent_force, cv, cm, cc, vs, declinaison = 0, 0, 0, 0, 0, 0, 0
             else:
-                st.write(f"📏 **Route Vraie (Rv) : {int(rv_calc)}°** | **Distance : {round(dist_calc, 1)} Nm**")
+                # Calcul de la déclinaison au milieu de la branche
+                lat_milieu = (pt_dep["lat"] + pt_arr["lat"]) / 2.0
+                lon_milieu = (pt_dep["lon"] + pt_arr["lon"]) / 2.0
+                declinaison = calculer_declinaison(lat_milieu, lon_milieu)
+                
+                # Affichage des infos incluant la déclinaison calculée
+                st.write(f"📏 **Route Vraie (Rv) : {int(rv_calc)}°** | **Distance : {round(dist_calc, 1)} Nm** | **Déclinaison locale : {declinaison:.1f}°**")
+                
                 vent_dir = col1.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, key=f"wdir_{pt_dep['id']}")
                 vent_force = col2.number_input(f"Vent Force (kt)", min_value=0, value=0, key=f"wforce_{pt_dep['id']}")
                 
                 cv, derive, vs = calculer_triangle_vitesses(rv_calc, vp_nav_kt, vent_dir, vent_force)
+                
+                # Application de la déclinaison calculée automatiquement
                 cm = (cv - declinaison) % 360
+                
                 table_dev_avion = AIRCRAFT_DATA[avion_choisi]["table_deviation"]
                 cc = interpoler_cap_compas(cm, table_dev_avion)
                 temps_vol_min = (dist_calc / vs) * 60 if vs > 0 else 0
@@ -246,16 +265,14 @@ with tab_carte:
     
     route_coords = [(pt["lat"], pt["lon"]) for pt in st.session_state.route]
     
-    # Centre de la carte
     if len(route_coords) > 0:
         avg_lat = sum(p[0] for p in route_coords) / len(route_coords)
         avg_lon = sum(p[1] for p in route_coords) / len(route_coords)
     else:
-        avg_lat, avg_lon = 46.5, 2.5 # Centre de la France par défaut
+        avg_lat, avg_lon = 46.5, 2.5 
         
     m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles=None)
     
-    # Fonds de carte OFM
     folium.TileLayer(
         tiles="https://nwy-tiles-api.prod.newaydata.com/tiles/{z}/{x}/{y}.jpg?path=latest/base/latest",
         attr='OpenFlightMaps', name='OFM - Relief', max_zoom=14, min_zoom=6, overlay=False, control=True
@@ -265,7 +282,6 @@ with tab_carte:
         attr='OFM Aero', name='OFM - Aéro', max_zoom=14, min_zoom=6, overlay=True, control=True, transparent=True
     ).add_to(m)
     
-    # Tracé route
     if len(route_coords) > 1:
         folium.PolyLine(route_coords, color="#FF00FF", weight=5, opacity=0.9, dash_array="10").add_to(m)
         
@@ -282,16 +298,13 @@ with tab_carte:
         
     folium.LayerControl(collapsed=False).add_to(m)
     
-    # Capture des clics sur la carte
     map_data = st_folium(m, width=1200, height=600, returned_objects=["last_clicked"])
     
-    # GESTION DU CLIC ET AJOUT DE POINT
     if map_data and map_data.get("last_clicked"):
         lat_clic = map_data["last_clicked"]["lat"]
         lon_clic = map_data["last_clicked"]["lng"]
         str_clic = f"{lat_clic}-{lon_clic}"
         
-        # On affiche le formulaire si le point n'a pas déjà été ajouté
         if st.session_state.last_map_added != str_clic:
             with st.container(border=True):
                 st.markdown("### ➕ Ajouter ce point à la route")
@@ -320,7 +333,6 @@ with tab_carte:
                             idx = options_insert.index(choix_insert) + 1
                             st.session_state.route.insert(idx, nouveau_pt)
                             
-                        # Marquer comme traité pour cacher le formulaire et éviter une boucle
                         st.session_state.last_map_added = str_clic
                         st.rerun()
 
@@ -344,7 +356,6 @@ with tab_centrage:
                 pax = st.number_input(f"Pilote + Pax (kg)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{pt['id']}")
                 bag = st.number_input(f"Bagages (kg)", min_value=0.0, max_value=35.0, value=0.0, step=1.0, key=f"bag_{pt['id']}")
                 
-                # Le carburant n'est saisi qu'au départ
                 if i == 0:
                     carb_litres = st.number_input(f"Carburant Initial (L)", min_value=0.0, max_value=CAPACITE_MAX_CARBURANT_L, value=70.0, step=1.0, key=f"carb_init")
                     carb_restant_list.append(carb_litres)
