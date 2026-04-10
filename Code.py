@@ -152,9 +152,9 @@ if "avion_choisi" not in st.session_state:
 # ==========================================
 # 4. BARRE LATÉRALE (SIDEBAR) & IMPORT/EXPORT
 # ==========================================
-st.sidebar.title("🛩️ EFB Aéroclub")
+st.sidebar.title("Nav Planner Calm")
 
-with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
+with st.sidebar.expander("Sauvegarder / Importer", expanded=False):
     export_data = {
         "avion": st.session_state.avion_choisi,
         "route": st.session_state.route,
@@ -178,7 +178,7 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
         }
     
     json_data = json.dumps(export_data, indent=4)
-    st.download_button("⬇️ Télécharger .efb", data=json_data, file_name=f"Nav_{datetime.now().strftime('%Y%m%d_%H%M')}.efb", mime="application/json", use_container_width=True)
+    st.download_button("Télécharger .efb", data=json_data, file_name=f"Nav_{datetime.now().strftime('%Y%m%d_%H%M')}.efb", mime="application/json", use_container_width=True)
     
     st.markdown("---")
     uploaded_file = st.file_uploader("Importer un fichier .efb", type=["efb", "json"])
@@ -200,7 +200,7 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
                         st.session_state[f"wdir_{pid}"] = int(b.get("wdir", 0))
                         st.session_state[f"wforce_{pid}"] = int(b.get("wforce", 0))
                         
-                        default_vz = 1000 if phase_b == "Montée" else (-500 if phase_b == "Descente" else 0)
+                        default_vz = 500 if phase_b == "Montée" else (-500 if phase_b == "Descente" else 0)
                         st.session_state[f"vz_{pid}"] = int(b.get("vz", default_vz))
                         st.session_state[f"tps_local_{pid}"] = float(b.get("tps_local", 45.0))
                         
@@ -238,14 +238,14 @@ if st.sidebar.button("Générer la route OACI", use_container_width=True):
     st.session_state.route = new_route
     st.rerun()
 
-if st.sidebar.button("🗑️ Vider la route (Repartir à zéro)", use_container_width=True):
+if st.sidebar.button("Vider la route (Repartir à zéro)", use_container_width=True):
     st.session_state.route = []
     st.rerun()
 
 # ==========================================
 # 5. ONGLETS PRINCIPAUX
 # ==========================================
-tab_nav, tab_carte, tab_centrage = st.tabs(["🗺️ Log de Navigation", "📍 Carte Interactive", "⚖️ Devis de Centrage"])
+tab_nav, tab_carte, tab_centrage = st.tabs(["Log de Navigation", "Carte Interactive", "Devis de Centrage"])
 
 conso_branches_litres = []
 temps_branches_min = []
@@ -257,7 +257,7 @@ fig_centrage = None
 # ONGLET 1 : LOG DE NAVIGATION
 # ------------------------------------------
 with tab_nav:
-    st.markdown("### 📍 Éditeur de la route")
+    st.markdown("### Éditeur de la route")
     
     if len(st.session_state.route) == 0:
         st.warning("La route est vide. Utilisez le menu de gauche pour l'initialiser.")
@@ -278,12 +278,12 @@ with tab_nav:
                             st.session_state.route[i+j]["lat"] = n_lat
                             st.session_state.route[i+j]["lon"] = n_lon
                             
-                            if st.button("🗑️ Supprimer", key=f"del_{pt['id']}", use_container_width=True):
+                            if st.button("Supprimer", key=f"del_{pt['id']}", use_container_width=True):
                                 st.session_state.route.pop(i+j)
                                 st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🧭 Calcul des Branches")
+    st.markdown("### Calcul des Branches")
     
     for i in range(len(st.session_state.route) - 1):
         pt_dep = st.session_state.route[i]
@@ -305,7 +305,7 @@ with tab_nav:
                 lon_milieu = (pt_dep["lon"] + pt_arr["lon"]) / 2.0
                 declinaison = calculer_declinaison(lat_milieu, lon_milieu)
                 
-                st.write(f"📏 **Route Vraie (Rv) : {int(rv_calc)}°** | **Distance : {round(dist_calc, 1)} Nm** | **Déclinaison locale : {declinaison:.1f}°**")
+                st.write(f" **Route Vraie (Rv) : {int(rv_calc)}°** | **Distance : {round(dist_calc, 1)} Nm** | **Déclinaison locale : {declinaison:.1f}°**")
                 
                 col_phase, col_ias, col_wdir, col_wforce = st.columns(4)
                 
@@ -318,7 +318,7 @@ with tab_nav:
                     vp_kmh = float(ias_kmh)
                 elif phase == "Montée":
                     ias_kmh = col_ias.number_input("IAS (km/h) [Fixe]", value=140, disabled=True, key=f"ias_{pt_dep['id']}")
-                    vz_ftmin = st.number_input("Taux de montée (ft/min)", value=1000, step=50, min_value=0, key=f"vz_{pt_dep['id']}")
+                    vz_ftmin = st.number_input("Taux de montée (ft/min)", value=500, step=50, min_value=0, key=f"vz_{pt_dep['id']}")
                     vp_kmh = 138.0 
                 elif phase == "Descente":
                     ias_kmh = col_ias.number_input("IAS (km/h)", value=175, step=5, key=f"ias_{pt_dep['id']}")
@@ -363,9 +363,9 @@ with tab_nav:
         secondes_tot = int((temps_total_min - int(temps_total_min)) * 60)
         
         if heures_tot > 0:
-            st.success(f"**⏱️ Durée totale estimée du vol : {heures_tot} h {minutes_tot:02d} min {secondes_tot:02d} s**")
+            st.success(f"**Durée totale estimée du vol : {heures_tot} h {minutes_tot:02d} min {secondes_tot:02d} s**")
         else:
-            st.success(f"**⏱️ Durée totale estimée du vol : {minutes_tot:02d} min {secondes_tot:02d} s**")
+            st.success(f"**Durée totale estimée du vol : {minutes_tot:02d} min {secondes_tot:02d} s**")
 
 # ------------------------------------------
 # ONGLET 2 : CARTE VFR & AJOUT DE POINTS
@@ -398,7 +398,7 @@ with tab_carte:
             if st.session_state.last_map_added != str_clic:
                 with st.container(border=True):
                     st.markdown("### ➕ Ajouter ce point à la route")
-                    st.write(f"📍 Coordonnées ciblées : Lat {lat_clic:.5f} / Lon {lon_clic:.5f}")
+                    st.write(f"Coordonnées ciblées : Lat {lat_clic:.5f} / Lon {lon_clic:.5f}")
                     
                     c1, c2, c3 = st.columns([1, 2, 1])
                     with c1:
@@ -485,10 +485,10 @@ with tab_centrage:
 # 6. GÉNÉRATION DU DOSSIER DE VOL (PDF)
 # ==========================================
 st.markdown("---")
-st.header("🖨️ Exportation du Dossier de Vol")
+st.header("Exportation du Dossier de Vol")
 
 if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is not None:
-    if st.button("📄 Générer le fichier PDF", use_container_width=True):
+    if st.button("Générer un fichier PDF", use_container_width=True):
         
         def clean_text(text):
             return str(text).encode('latin-1', 'replace').decode('latin-1')
@@ -618,9 +618,9 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
             with open(tmp_pdf.name, "rb") as f:
                 pdf_bytes = f.read()
 
-        st.success("✅ Document PDF généré avec succès !")
+        st.success("Document PDF généré avec succès !")
         st.download_button(
-            label="📥 Télécharger le Dossier de Vol (PDF)",
+            label="Télécharger le Dossier de Vol (PDF)",
             data=pdf_bytes,
             file_name=f"Dossier_Vol_{avion_choisi}_{datetime.now().strftime('%d%m%Y')}.pdf",
             mime="application/pdf",
