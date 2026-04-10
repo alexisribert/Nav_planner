@@ -5,18 +5,25 @@ import math
 import uuid
 import folium
 import json
+import tempfile
+import os
 from streamlit_folium import st_folium
 from datetime import datetime
 import pygeomag
+
+# --- IMPORT FPDF POUR L'EXPORT PDF ---
+try:
+    from fpdf import FPDF
+except ImportError:
+    st.error("Veuillez installer fpdf via la commande : pip install fpdf")
 
 # ==========================================
 # 1. DONNÉES DES AVIONS & CARBURANT
 # ==========================================
 DENSITE_AVGAS = 0.72  
 CAPACITE_MAX_CARBURANT_L = 118.0  
-MARGE_CONSO = 1.10 # +10% de marge de sécurité
+MARGE_CONSO = 1.10 
 
-# Consommation de base selon la phase de vol (en L/h)
 CONSO_PHASES_L_H = {
     "Montée": 30.0,
     "Croisière": 25.0,
@@ -81,21 +88,17 @@ def calculer_distance_et_cap(lat1, lon1, lat2, lon2):
 def calculer_triangle_vitesses(rv_deg, vp_kt, vent_dir_deg, vent_force_kt):
     if vp_kt <= 0:
         return rv_deg, 0.0, 0.0
-        
     rv_rad, vent_dir_rad = math.radians(rv_deg), math.radians(vent_dir_deg)
     angle_au_vent = vent_dir_rad - rv_rad
     vent_traversier = vent_force_kt * math.sin(angle_au_vent)
     vent_effectif = vent_force_kt * math.cos(angle_au_vent)
-    
     try:
         derive_rad = math.asin(vent_traversier / vp_kt)
     except ValueError:
         derive_rad = 0
-        
     derive_deg = math.degrees(derive_rad)
     cv_deg = (rv_deg + derive_deg) % 360
     vs_kt = vp_kt * math.cos(derive_rad) - vent_effectif
-    
     return cv_deg, derive_deg, max(0.0, vs_kt)
 
 def interpoler_cap_compas(cm, table_deviation):
@@ -150,7 +153,6 @@ if "avion_choisi" not in st.session_state:
 # ==========================================
 st.sidebar.title("🛩️ EFB Aéroclub")
 
-# --- 1. MODULE SAUVEGARDE / IMPORTATION ---
 with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
     export_data = {
         "avion": st.session_state.avion_choisi,
@@ -175,25 +177,15 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
         }
     
     json_data = json.dumps(export_data, indent=4)
-    nom_fichier = f"Nav_{datetime.now().strftime('%Y%m%d_%H%M')}.efb"
-    
-    st.download_button(
-        label="⬇️ Télécharger la navigation",
-        data=json_data,
-        file_name=nom_fichier,
-        mime="application/json",
-        use_container_width=True
-    )
+    st.download_button("⬇️ Télécharger .efb", data=json_data, file_name=f"Nav_{datetime.now().strftime('%Y%m%d_%H%M')}.efb", mime="application/json", use_container_width=True)
     
     st.markdown("---")
-    
     uploaded_file = st.file_uploader("Importer un fichier .efb", type=["efb", "json"])
     
     if uploaded_file is not None:
         if st.session_state.last_uploaded_file != uploaded_file.file_id:
             try:
                 data_import = json.loads(uploaded_file.getvalue().decode("utf-8"))
-                
                 st.session_state.route = data_import["route"]
                 st.session_state.avion_choisi = data_import.get("avion", list(AIRCRAFT_DATA.keys())[0])
                 st.session_state["carb_init"] = float(data_import.get("carb_init", 70.0))
@@ -208,10 +200,7 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
                         st.session_state[f"vz_{pid}"] = int(b.get("vz", -500))
                         st.session_state[f"tps_local_{pid}"] = float(b.get("tps_local", 45.0))
                         
-                        # --- LA RUSTINE EST ICI ---
-                        # On récupère la valeur brute sauvegardée
                         raw_ias = b.get("ias", 204)
-                        # Si c'était la chaîne buggée, on force à 140
                         if isinstance(raw_ias, str) and "140" in raw_ias:
                             st.session_state[f"ias_{pid}"] = 140
                         else:
@@ -227,13 +216,10 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
             except Exception as e:
                 st.error(f"Fichier invalide. Raison technique : {e}")
 
-# --- 2. SÉLECTION DE L'AVION ---
 avion_choisi = st.sidebar.selectbox("Avion sélectionné", list(AIRCRAFT_DATA.keys()), key="avion_choisi")
 
 st.sidebar.markdown("---")
 st.sidebar.header("Initialiser la Route")
-st.sidebar.info("Construisez la base OACI ici. Vous pourrez insérer d'autres points plus tard directement sur la carte.")
-
 dep_oaci = st.sidebar.text_input("Départ (OACI)", "LFQQ").upper()
 inter_oaci = st.sidebar.text_input("Étapes (OACI, ex: LFPO, LFAQ)", "").upper()
 arr_oaci = st.sidebar.text_input("Arrivée (OACI)", "LFQQ").upper()
@@ -248,7 +234,6 @@ if st.sidebar.button("Générer la route OACI", use_container_width=True):
     st.session_state.route = new_route
     st.rerun()
 
-st.sidebar.markdown("---")
 if st.sidebar.button("🗑️ Vider la route (Repartir à zéro)", use_container_width=True):
     st.session_state.route = []
     st.rerun()
@@ -260,6 +245,8 @@ tab_nav, tab_carte, tab_centrage = st.tabs(["🗺️ Log de Navigation", "📍 C
 
 conso_branches_litres = []
 temps_branches_min = []
+log_nav_data = []
+fig_centrage = None # Pour sauvegarder la figure globalement
 
 # ------------------------------------------
 # ONGLET 1 : LOG DE NAVIGATION
@@ -293,7 +280,6 @@ with tab_nav:
     st.markdown("---")
     st.markdown("### 🧭 Calcul des Branches")
     
-    log_nav_data = []
     for i in range(len(st.session_state.route) - 1):
         pt_dep = st.session_state.route[i]
         pt_arr = st.session_state.route[i+1]
@@ -306,7 +292,6 @@ with tab_nav:
                 temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0.0, value=45.0, step=1.0, key=f"tps_local_{pt_dep['id']}")
                 phase = "Local"
                 vp_kmh, vent_dir, vent_force, cv, cm, cc, vs, declinaison = 0, 0, 0, 0, 0, 0, 0, 0
-                
                 m = int(temps_vol_min)
                 s = int((temps_vol_min - m) * 60)
                 temps_str = f"{m:02d}m {s:02d}s"
@@ -320,30 +305,20 @@ with tab_nav:
                 col_phase, col_ias, col_wdir, col_wforce = st.columns(4)
                 
                 phase = col_phase.selectbox("Phase de vol", ["Croisière", "Montée", "Descente"], key=f"phase_{pt_dep['id']}")
-                vent_dir = col_wdir.number_input(f"Vent Dir (°)", min_value=0, max_value=360, step=5, key=f"wdir_{pt_dep['id']}")
-                vent_force = col_wforce.number_input(f"Vent Force (kt)", min_value=0, step=1, key=f"wforce_{pt_dep['id']}")
+                vent_dir = col_wdir.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, step=5, key=f"wdir_{pt_dep['id']}")
+                vent_force = col_wforce.number_input(f"Vent Force (kt)", min_value=0, value=0, step=1, key=f"wforce_{pt_dep['id']}")
                 
                 if phase == "Croisière":
                     ias_kmh = col_ias.number_input("IAS (km/h)", value=204, step=5, key=f"ias_{pt_dep['id']}")
                     vp_kmh = float(ias_kmh)
-                    st.info(f"Vp horizontale (projection de l'IAS) : **{vp_kmh:.0f} km/h**")
-                    
                 elif phase == "Montée":
-                    # Correction: C'est un number_input désactivé, qui garantit un type entier en mémoire
                     ias_kmh = col_ias.number_input("IAS (km/h) [Fixe]", value=140, disabled=True, key=f"ias_{pt_dep['id']}")
                     vp_kmh = 138.0 
-                    st.info(f"Vp horizontale déduite de la pente : **{vp_kmh:.0f} km/h**")
-                    
                 elif phase == "Descente":
                     ias_kmh = col_ias.number_input("IAS (km/h)", value=175, step=5, key=f"ias_{pt_dep['id']}")
                     vz_ftmin = st.number_input("Taux de descente (ft/min)", value=-500, step=50, max_value=0, key=f"vz_{pt_dep['id']}")
-                    
                     vz_kmh = abs(vz_ftmin) * 0.018288 
-                    if ias_kmh > vz_kmh:
-                        vp_kmh = math.sqrt(ias_kmh**2 - vz_kmh**2)
-                    else:
-                        vp_kmh = 0.0
-                    st.info(f"Vp horizontale calculée par Pythagore : **{vp_kmh:.0f} km/h**")
+                    vp_kmh = math.sqrt(ias_kmh**2 - vz_kmh**2) if ias_kmh > vz_kmh else 0.0
 
                 vp_kt = vp_kmh / 1.852
                 cv, derive, vs = calculer_triangle_vitesses(rv_calc, vp_kt, vent_dir, vent_force)
@@ -364,175 +339,170 @@ with tab_nav:
             conso_branches_litres.append(conso_branche)
             
             log_nav_data.append({
-                "De": pt_dep["nom"], "Vers": pt_arr["nom"],
-                "Phase": phase, "Vp (km/h)": int(vp_kmh) if dist_calc > 0 else "-",
-                "Rv (°)": int(rv_calc) if dist_calc > 0 else "-", 
-                "Dist (Nm)": round(dist_calc, 1),
-                "Vent": f"{int(vent_dir)}° / {int(vent_force)}kt" if dist_calc > 0 else "-",
-                "Cv (°)": int(cv) if dist_calc > 0 else "-", 
-                "Cm (°)": int(cm) if dist_calc > 0 else "-", 
-                "Cc (°)": int(cc) if dist_calc > 0 else "-",
-                "Vs (kt)": int(vs) if dist_calc > 0 else "-", 
-                "Temps": temps_str
+                "De": pt_dep["nom"], "Vers": pt_arr["nom"], "Phase": phase,
+                "Vp": f"{int(vp_kmh)}" if dist_calc > 0 else "-", "Rv": f"{int(rv_calc)}°" if dist_calc > 0 else "-", 
+                "Dist": f"{round(dist_calc, 1)} Nm", "Vent": f"{int(vent_dir)}°/{int(vent_force)}kt" if dist_calc > 0 else "-",
+                "Cv": f"{int(cv)}°" if dist_calc > 0 else "-", "Cm": f"{int(cm)}°" if dist_calc > 0 else "-", 
+                "Cc": f"{int(cc)}°" if dist_calc > 0 else "-", "Vs": f"{int(vs)} kt" if dist_calc > 0 else "-", "Temps": temps_str
             })
             
     if len(log_nav_data) > 0:
-        st.markdown("#### Tableau de Marche (Log de Nav)")
+        st.markdown("#### Tableau de Marche")
         st.dataframe(pd.DataFrame(log_nav_data), use_container_width=True)
-        
-        temps_total_min = sum(temps_branches_min)
-        heures_tot = int(temps_total_min // 60)
-        minutes_tot = int(temps_total_min % 60)
-        secondes_tot = int((temps_total_min - int(temps_total_min)) * 60)
-        
-        if heures_tot > 0:
-            st.success(f"**⏱️ Durée totale estimée du vol : {heures_tot} h {minutes_tot:02d} min {secondes_tot:02d} s**")
-        else:
-            st.success(f"**⏱️ Durée totale estimée du vol : {minutes_tot:02d} min {secondes_tot:02d} s**")
 
 # ------------------------------------------
-# ONGLET 2 : CARTE VFR (AJOUT INTERACTIF)
+# ONGLET 2 : CARTE VFR
 # ------------------------------------------
 with tab_carte:
-    st.subheader("Visualisation et Ajout de points")
-    st.info("Cliquez n'importe où sur la carte pour insérer un nouveau point dans votre log de navigation.")
-    
-    route_coords = [(pt["lat"], pt["lon"]) for pt in st.session_state.route]
-    
-    if len(route_coords) > 0:
+    if len(st.session_state.route) > 1:
+        route_coords = [(pt["lat"], pt["lon"]) for pt in st.session_state.route]
         avg_lat = sum(p[0] for p in route_coords) / len(route_coords)
         avg_lon = sum(p[1] for p in route_coords) / len(route_coords)
-    else:
-        avg_lat, avg_lon = 46.5, 2.5 
         
-    m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles=None)
-    
-    folium.TileLayer(
-        tiles="https://nwy-tiles-api.prod.newaydata.com/tiles/{z}/{x}/{y}.jpg?path=latest/base/latest",
-        attr='OpenFlightMaps', name='OFM - Relief', max_zoom=14, min_zoom=6, overlay=False, control=True
-    ).add_to(m)
-    folium.TileLayer(
-        tiles="https://nwy-tiles-api.prod.newaydata.com/tiles/{z}/{x}/{y}.png?path=latest/aero/latest",
-        attr='OFM Aero', name='OFM - Aéro', max_zoom=14, min_zoom=6, overlay=True, control=True, transparent=True
-    ).add_to(m)
-    
-    if len(route_coords) > 1:
-        folium.PolyLine(route_coords, color="#FF00FF", weight=5, opacity=0.9, dash_array="10").add_to(m)
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=8, tiles=None)
+        folium.TileLayer(tiles="https://nwy-tiles-api.prod.newaydata.com/tiles/{z}/{x}/{y}.jpg?path=latest/base/latest", attr='OFM', overlay=False).add_to(m)
+        folium.TileLayer(tiles="https://nwy-tiles-api.prod.newaydata.com/tiles/{z}/{x}/{y}.png?path=latest/aero/latest", attr='OFM', overlay=True).add_to(m)
+        folium.PolyLine(route_coords, color="#FF00FF", weight=5).add_to(m)
         
-    for i, pt in enumerate(st.session_state.route):
-        couleur, icone = "blue", "map-marker"
-        if i == 0: couleur, icone = "green", "plane-departure"
-        elif i == len(route_coords) - 1: couleur, icone = "red", "plane-arrival"
+        for i, pt in enumerate(st.session_state.route):
+            couleur, icone = ("green", "plane-departure") if i==0 else ("red", "plane-arrival") if i==len(route_coords)-1 else ("blue", "map-marker")
+            folium.Marker(location=[pt["lat"], pt["lon"]], popup=pt['nom'], icon=folium.Icon(color=couleur, icon=icone, prefix='fa')).add_to(m)
             
-        folium.Marker(
-            location=[pt["lat"], pt["lon"]],
-            popup=f"<b>{pt['nom']}</b>", tooltip=pt['nom'],
-            icon=folium.Icon(color=couleur, icon=icone, prefix='fa')
-        ).add_to(m)
-        
-    folium.LayerControl(collapsed=False).add_to(m)
-    
-    map_data = st_folium(m, width=1200, height=600, returned_objects=["last_clicked"])
-    
-    if map_data and map_data.get("last_clicked"):
-        lat_clic = map_data["last_clicked"]["lat"]
-        lon_clic = map_data["last_clicked"]["lng"]
-        str_clic = f"{lat_clic}-{lon_clic}"
-        
-        if st.session_state.last_map_added != str_clic:
-            with st.container(border=True):
-                st.markdown("### ➕ Ajouter ce point à la route")
-                st.write(f"📍 Coordonnées ciblées : Lat {lat_clic:.5f} / Lon {lon_clic:.5f}")
-                
-                c1, c2, c3 = st.columns([1, 2, 1])
-                with c1:
-                    nom_nouveau = st.text_input("Nom du repère (ex: SW, LIL...)", "WPT")
-                with c2:
-                    options_insert = []
-                    for i in range(len(st.session_state.route) - 1):
-                        pt_a = st.session_state.route[i]['nom']
-                        pt_b = st.session_state.route[i+1]['nom']
-                        options_insert.append(f"Branche {i+1} : Insérer entre {pt_a} et {pt_b}")
-                    options_insert.append("À la fin de la route (Nouvelle arrivée)")
-                    
-                    choix_insert = st.selectbox("Position d'insertion", options_insert)
-                with c3:
-                    st.write("") 
-                    st.write("")
-                    if st.button("Valider l'ajout", use_container_width=True):
-                        nouveau_pt = create_point(nom_nouveau, lat_clic, lon_clic)
-                        if "À la fin" in choix_insert:
-                            st.session_state.route.append(nouveau_pt)
-                        else:
-                            idx = options_insert.index(choix_insert) + 1
-                            st.session_state.route.insert(idx, nouveau_pt)
-                            
-                        st.session_state.last_map_added = str_clic
-                        st.rerun()
+        map_data = st_folium(m, width=1200, height=600, returned_objects=["last_clicked"])
 
 # ------------------------------------------
 # ONGLET 3 : DEVIS DE CENTRAGE
 # ------------------------------------------
 with tab_centrage:
-    st.subheader("Masses et chargement")
-    if len(st.session_state.route) == 0:
-        st.warning("Ajoutez des points à la route pour calculer le centrage.")
-    else:
-        st.info(f"Le carburant aux étapes intermédiaires est déduit automatiquement (Montée: 30 L/h, Croisière/Descente: 25 L/h + {int((MARGE_CONSO-1)*100)}% de marge).")
-        
+    if len(st.session_state.route) > 0:
         resultats_centrage = []
         colonnes_centrage = st.columns(len(st.session_state.route))
         carb_restant_list = []
 
         for i, pt in enumerate(st.session_state.route):
             with colonnes_centrage[i]:
-                st.markdown(f"**{pt['nom']}**")
-                pax = st.number_input(f"Pilote + Pax (kg)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{pt['id']}")
-                bag = st.number_input(f"Bagages (kg)", min_value=0.0, max_value=35.0, value=0.0, step=1.0, key=f"bag_{pt['id']}")
+                pax = st.number_input(f"Pilote+Pax (kg)", value=140.0, key=f"pax_{pt['id']}")
+                bag = st.number_input(f"Bagages (kg)", value=0.0, key=f"bag_{pt['id']}")
                 
                 if i == 0:
-                    carb_litres = st.number_input(f"Carburant Initial (L)", min_value=0.0, max_value=CAPACITE_MAX_CARBURANT_L, value=70.0, step=1.0, key=f"carb_init")
+                    carb_litres = st.number_input(f"Carburant Initial", value=70.0, key=f"carb_init")
                     carb_restant_list.append(carb_litres)
                 else:
-                    conso_litres = conso_branches_litres[i-1] if len(conso_branches_litres) > i-1 else 0.0
-                    carb_litres = max(0.0, carb_restant_list[-1] - conso_litres)
+                    carb_litres = max(0.0, carb_restant_list[-1] - conso_branches_litres[i-1])
                     carb_restant_list.append(carb_litres)
-                    
-                    st.text_input(f"Carburant calculé (L)", value=f"{carb_litres:.1f}", disabled=True, key=f"cauto_{pt['id']}_{carb_litres:.1f}")
+                    st.text_input(f"Carburant (L)", value=f"{carb_litres:.1f}", disabled=True, key=f"cauto_{pt['id']}")
                 
                 carb_kg = carb_litres * DENSITE_AVGAS
                 masse, cg = calculer_centrage(avion_choisi, pax, bag, carb_kg)
                 resultats_centrage.append({"Etape": pt['nom'], "Masse": masse, "CG": cg})
 
-        st.markdown("---")
-        col_graph, col_alertes = st.columns([2, 1])
+        fig_centrage, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(ENVELOPPE_CG, ENVELOPPE_MASSE, 'r-', linewidth=2)
+        ax.fill(ENVELOPPE_CG, ENVELOPPE_MASSE, 'red', alpha=0.1)
         
-        with col_graph:
-            fig, ax = plt.subplots(figsize=(8, 5))
-            ax.plot(ENVELOPPE_CG, ENVELOPPE_MASSE, 'r-', linewidth=2, label="Enveloppe autorisée")
-            ax.fill(ENVELOPPE_CG, ENVELOPPE_MASSE, 'red', alpha=0.1)
-            
-            df_res_centrage = pd.DataFrame(resultats_centrage)
-            colors = ['blue', 'purple', 'orange', 'green', 'brown', 'black']
-            
-            for i in range(len(df_res_centrage)):
-                cg_actuel, masse_actuelle = df_res_centrage.loc[i, "CG"], df_res_centrage.loc[i, "Masse"]
-                ax.plot(cg_actuel, masse_actuelle, marker='o', markersize=8, color=colors[i % len(colors)])
-                ax.text(cg_actuel + 0.002, masse_actuelle + 5, df_res_centrage.loc[i, "Etape"], fontsize=9)
-                if i < len(df_res_centrage) - 1:
-                    ax.annotate('', xy=(df_res_centrage.loc[i+1, "CG"], df_res_centrage.loc[i+1, "Masse"]), 
-                                xytext=(cg_actuel, masse_actuelle), arrowprops=dict(arrowstyle="->", color='gray', ls='--'))
-            
-            ax.set_xlim(0.18, 0.50)
-            ax.set_ylim(480, 800)
-            ax.set_xlabel("Centrage (m)")
-            ax.set_ylabel("Masse (kg)")
-            ax.grid(True, linestyle=':', alpha=0.7)
-            st.pyplot(fig)
+        df_res_centrage = pd.DataFrame(resultats_centrage)
+        for i in range(len(df_res_centrage)):
+            cg_actuel, masse_actuelle = df_res_centrage.loc[i, "CG"], df_res_centrage.loc[i, "Masse"]
+            ax.plot(cg_actuel, masse_actuelle, marker='o', markersize=8)
+            ax.text(cg_actuel + 0.002, masse_actuelle + 5, df_res_centrage.loc[i, "Etape"], fontsize=9)
+            if i < len(df_res_centrage) - 1:
+                ax.annotate('', xy=(df_res_centrage.loc[i+1, "CG"], df_res_centrage.loc[i+1, "Masse"]), xytext=(cg_actuel, masse_actuelle), arrowprops=dict(arrowstyle="->", color='gray', ls='--'))
+        
+        ax.set_xlim(0.18, 0.50)
+        ax.set_ylim(480, 800)
+        ax.set_xlabel("Centrage (m)")
+        ax.set_ylabel("Masse (kg)")
+        ax.grid(True, linestyle=':', alpha=0.7)
+        st.pyplot(fig_centrage)
 
-        with col_alertes:
-            for i, row in df_res_centrage.iterrows():
-                if row["Masse"] > AIRCRAFT_DATA[avion_choisi]["masse_max"]:
-                    st.error(f"⚠️ Dépassement masse max à : {row['Etape']}")
-                if row["CG"] < 0.22 or row["CG"] > 0.46:
-                    st.error(f"⚠️ Centrage hors limites à : {row['Etape']}")
+
+# ==========================================
+# 6. GÉNÉRATION DU DOSSIER DE VOL (PDF)
+# ==========================================
+st.markdown("---")
+st.header("🖨️ Exportation du Dossier de Vol")
+
+if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is not None:
+    if st.button("📄 Générer le fichier PDF", use_container_width=True):
+        
+        def clean_text(text):
+            """Sécurise les accents pour FPDF"""
+            return str(text).encode('latin-1', 'replace').decode('latin-1')
+
+        pdf = FPDF(orientation='L', unit='mm', format='A4')
+        
+        # --- PAGE 1 : LOG DE NAV ---
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 16)
+        date_vol = datetime.now().strftime('%d/%m/%Y')
+        pdf.cell(0, 10, clean_text(f"Dossier de Vol VFR - Avion : {avion_choisi} - Date : {date_vol}"), 0, 1, 'C')
+        pdf.ln(5)
+
+        pdf.set_font("Arial", 'B', 10)
+        headers = ["De", "Vers", "Phase", "Vp", "Rv", "Dist", "Vent", "Cv", "Cm", "Cc", "Vs", "Temps"]
+        col_w = [25, 25, 22, 18, 15, 18, 25, 15, 15, 15, 15, 22]
+
+        # En-têtes du tableau
+        for i, h in enumerate(headers):
+            pdf.cell(col_w[i], 8, clean_text(h), border=1, align='C')
+        pdf.ln()
+
+        # Remplissage du tableau
+        pdf.set_font("Arial", '', 10)
+        for row in log_nav_data:
+            pdf.cell(col_w[0], 8, clean_text(row["De"]), border=1, align='C')
+            pdf.cell(col_w[1], 8, clean_text(row["Vers"]), border=1, align='C')
+            pdf.cell(col_w[2], 8, clean_text(row["Phase"]), border=1, align='C')
+            pdf.cell(col_w[3], 8, clean_text(row["Vp"]), border=1, align='C')
+            pdf.cell(col_w[4], 8, clean_text(row["Rv"]), border=1, align='C')
+            pdf.cell(col_w[5], 8, clean_text(row["Dist"]), border=1, align='C')
+            pdf.cell(col_w[6], 8, clean_text(row["Vent"]), border=1, align='C')
+            pdf.cell(col_w[7], 8, clean_text(row["Cv"]), border=1, align='C')
+            pdf.cell(col_w[8], 8, clean_text(row["Cm"]), border=1, align='C')
+            pdf.cell(col_w[9], 8, clean_text(row["Cc"]), border=1, align='C')
+            pdf.cell(col_w[10], 8, clean_text(row["Vs"]), border=1, align='C')
+            pdf.cell(col_w[11], 8, clean_text(row["Temps"]), border=1, align='C')
+            pdf.ln()
+
+        # --- PAGE 2 : GRAPHIQUES ---
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(0, 10, clean_text("Devis de Masse et Centrage & Schéma de la route"), 0, 1, 'L')
+        pdf.ln(5)
+
+        # 1. Sauvegarde et insertion du Graphe de Centrage
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_cg:
+            fig_centrage.savefig(tmp_cg.name, format="png", bbox_inches="tight")
+            pdf.image(tmp_cg.name, x=10, y=30, w=130)
+
+        # 2. Génération et insertion du Tracé Vectoriel de la Route
+        fig_map, ax_map = plt.subplots(figsize=(8, 5))
+        lats = [pt["lat"] for pt in st.session_state.route]
+        lons = [pt["lon"] for pt in st.session_state.route]
+        noms = [pt["nom"] for pt in st.session_state.route]
+        ax_map.plot(lons, lats, color='#FF00FF', linewidth=2, linestyle='--', marker='o')
+        for i, txt in enumerate(noms):
+            ax_map.annotate(txt, (lons[i], lats[i]), textcoords="offset points", xytext=(0,5), ha='center')
+        ax_map.set_title("Tracé vectoriel de la route")
+        ax_map.grid(True, linestyle=':')
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_map:
+            fig_map.savefig(tmp_map.name, format="png", bbox_inches="tight")
+            pdf.image(tmp_map.name, x=150, y=30, w=130)
+
+        # Finalisation du fichier PDF de manière sécurisée
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+            pdf.output(tmp_pdf.name)
+            with open(tmp_pdf.name, "rb") as f:
+                pdf_bytes = f.read()
+
+        st.success("✅ Document généré avec succès !")
+        st.download_button(
+            label="📥 Télécharger le Dossier (PDF)",
+            data=pdf_bytes,
+            file_name=f"Dossier_Vol_{avion_choisi}_{datetime.now().strftime('%d%m%Y')}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+else:
+    st.info("Veuillez générer une route pour débloquer l'exportation PDF.")
