@@ -150,7 +150,7 @@ if "avion_choisi" not in st.session_state:
 # ==========================================
 st.sidebar.title("🛩️ EFB Aéroclub")
 
-# --- 1. MODULE SAUVEGARDE / IMPORTATION (Doit être en premier pour éviter le crash !) ---
+# --- 1. MODULE SAUVEGARDE / IMPORTATION ---
 with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
     export_data = {
         "avion": st.session_state.avion_choisi,
@@ -192,15 +192,12 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
     if uploaded_file is not None:
         if st.session_state.last_uploaded_file != uploaded_file.file_id:
             try:
-                # Lecture stricte du JSON
                 data_import = json.loads(uploaded_file.getvalue().decode("utf-8"))
                 
-                # Réinjection globale
                 st.session_state.route = data_import["route"]
                 st.session_state.avion_choisi = data_import.get("avion", list(AIRCRAFT_DATA.keys())[0])
                 st.session_state["carb_init"] = float(data_import.get("carb_init", 70.0))
                 
-                # Réinjection par points avec transtypage explicite (évite les bugs Streamlit)
                 for pt in data_import["route"]:
                     pid = pt['id']
                     if pid in data_import.get("branches", {}):
@@ -208,9 +205,17 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
                         st.session_state[f"phase_{pid}"] = str(b.get("phase", "Croisière"))
                         st.session_state[f"wdir_{pid}"] = int(b.get("wdir", 0))
                         st.session_state[f"wforce_{pid}"] = int(b.get("wforce", 0))
-                        st.session_state[f"ias_{pid}"] = int(b.get("ias", 204))
                         st.session_state[f"vz_{pid}"] = int(b.get("vz", -500))
                         st.session_state[f"tps_local_{pid}"] = float(b.get("tps_local", 45.0))
+                        
+                        # --- LA RUSTINE EST ICI ---
+                        # On récupère la valeur brute sauvegardée
+                        raw_ias = b.get("ias", 204)
+                        # Si c'était la chaîne buggée, on force à 140
+                        if isinstance(raw_ias, str) and "140" in raw_ias:
+                            st.session_state[f"ias_{pid}"] = 140
+                        else:
+                            st.session_state[f"ias_{pid}"] = int(raw_ias)
                     
                     if pid in data_import.get("poids", {}):
                         p = data_import["poids"][pid]
@@ -222,7 +227,7 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
             except Exception as e:
                 st.error(f"Fichier invalide. Raison technique : {e}")
 
-# --- 2. SÉLECTION DE L'AVION (Maintenant sécurisé !) ---
+# --- 2. SÉLECTION DE L'AVION ---
 avion_choisi = st.sidebar.selectbox("Avion sélectionné", list(AIRCRAFT_DATA.keys()), key="avion_choisi")
 
 st.sidebar.markdown("---")
@@ -315,8 +320,8 @@ with tab_nav:
                 col_phase, col_ias, col_wdir, col_wforce = st.columns(4)
                 
                 phase = col_phase.selectbox("Phase de vol", ["Croisière", "Montée", "Descente"], key=f"phase_{pt_dep['id']}")
-                vent_dir = col_wdir.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, step=5, key=f"wdir_{pt_dep['id']}")
-                vent_force = col_wforce.number_input(f"Vent Force (kt)", min_value=0, value=0, step=1, key=f"wforce_{pt_dep['id']}")
+                vent_dir = col_wdir.number_input(f"Vent Dir (°)", min_value=0, max_value=360, step=5, key=f"wdir_{pt_dep['id']}")
+                vent_force = col_wforce.number_input(f"Vent Force (kt)", min_value=0, step=1, key=f"wforce_{pt_dep['id']}")
                 
                 if phase == "Croisière":
                     ias_kmh = col_ias.number_input("IAS (km/h)", value=204, step=5, key=f"ias_{pt_dep['id']}")
@@ -324,7 +329,8 @@ with tab_nav:
                     st.info(f"Vp horizontale (projection de l'IAS) : **{vp_kmh:.0f} km/h**")
                     
                 elif phase == "Montée":
-                    col_ias.text_input("IAS (km/h)", value="140 (Fixe)", disabled=True, key=f"ias_{pt_dep['id']}")
+                    # Correction: C'est un number_input désactivé, qui garantit un type entier en mémoire
+                    ias_kmh = col_ias.number_input("IAS (km/h) [Fixe]", value=140, disabled=True, key=f"ias_{pt_dep['id']}")
                     vp_kmh = 138.0 
                     st.info(f"Vp horizontale déduite de la pente : **{vp_kmh:.0f} km/h**")
                     
