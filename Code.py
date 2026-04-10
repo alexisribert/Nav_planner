@@ -79,7 +79,6 @@ def calculer_distance_et_cap(lat1, lon1, lat2, lon2):
     return distance, cap_vrai
 
 def calculer_triangle_vitesses(rv_deg, vp_kt, vent_dir_deg, vent_force_kt):
-    # Sécurité anti-crash si la Vp est nulle
     if vp_kt <= 0:
         return rv_deg, 0.0, 0.0
         
@@ -143,18 +142,18 @@ if "last_map_added" not in st.session_state:
     st.session_state.last_map_added = None
 if "last_uploaded_file" not in st.session_state:
     st.session_state.last_uploaded_file = None
+if "avion_choisi" not in st.session_state:
+    st.session_state.avion_choisi = list(AIRCRAFT_DATA.keys())[0]
 
 # ==========================================
 # 4. BARRE LATÉRALE (SIDEBAR) & IMPORT/EXPORT
 # ==========================================
 st.sidebar.title("🛩️ EFB Aéroclub")
 
-avion_choisi = st.sidebar.selectbox("Avion sélectionné", list(AIRCRAFT_DATA.keys()), key="avion_choisi")
-
-# --- MODULE SAUVEGARDE / IMPORTATION ---
+# --- 1. MODULE SAUVEGARDE / IMPORTATION (Doit être en premier pour éviter le crash !) ---
 with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
     export_data = {
-        "avion": avion_choisi,
+        "avion": st.session_state.avion_choisi,
         "route": st.session_state.route,
         "carb_init": st.session_state.get("carb_init", 70.0),
         "branches": {},
@@ -196,11 +195,12 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
                 # Lecture stricte du JSON
                 data_import = json.loads(uploaded_file.getvalue().decode("utf-8"))
                 
+                # Réinjection globale
                 st.session_state.route = data_import["route"]
                 st.session_state.avion_choisi = data_import.get("avion", list(AIRCRAFT_DATA.keys())[0])
                 st.session_state["carb_init"] = float(data_import.get("carb_init", 70.0))
                 
-                # Réinjection avec transtypage explicite pour éviter les crashs Streamlit
+                # Réinjection par points avec transtypage explicite (évite les bugs Streamlit)
                 for pt in data_import["route"]:
                     pid = pt['id']
                     if pid in data_import.get("branches", {}):
@@ -222,8 +222,11 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
             except Exception as e:
                 st.error(f"Fichier invalide. Raison technique : {e}")
 
+# --- 2. SÉLECTION DE L'AVION (Maintenant sécurisé !) ---
+avion_choisi = st.sidebar.selectbox("Avion sélectionné", list(AIRCRAFT_DATA.keys()), key="avion_choisi")
+
 st.sidebar.markdown("---")
-st.sidebar.header("1. Initialiser la Route")
+st.sidebar.header("Initialiser la Route")
 st.sidebar.info("Construisez la base OACI ici. Vous pourrez insérer d'autres points plus tard directement sur la carte.")
 
 dep_oaci = st.sidebar.text_input("Départ (OACI)", "LFQQ").upper()
