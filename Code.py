@@ -30,13 +30,13 @@ AIRCRAFT_DATA = {
     "D-EVTL": {
         "masse_vide": 557.58, "bras_vide": 0.276,   
         "bras": {"pilote_pax": 0.45, "carburant": 1.1, "bagages": 1.2},
-        "masse_max": 780, "vp_croisiere_kmh": 175, 
+        "masse_max": 780, 
         "table_deviation": {0: 0, 30: 0, 60: 0, 90: 0, 120: 0, 150: 0, 180: 0, 210: 0, 240: 0, 270: 0, 300: 0, 330: 0, 360: 0}
     },
     "F-HNBB": {
         "masse_vide": 541.90, "bras_vide": 0.261,  
         "bras": {"pilote_pax": 0.45, "carburant": 1.1, "bagages": 1.2},
-        "masse_max": 780, "vp_croisiere_kmh": 175,
+        "masse_max": 780,
         "table_deviation": {0: 0, 30: -1, 60: 0, 90: -1, 120: -2, 150: -1, 180: 1, 210: 0, 240: 0, 270: 1, 300: 0, 330: 1, 360: 0}
     }
 }
@@ -211,8 +211,6 @@ with tab_nav:
         dist_calc, rv_calc = calculer_distance_et_cap(pt_dep["lat"], pt_dep["lon"], pt_arr["lat"], pt_arr["lon"])
         
         with st.expander(f"Branche {i+1} : {pt_dep['nom']} ➔ {pt_arr['nom']}", expanded=True):
-            col1, col2 = st.columns(2)
-            
             if dist_calc == 0:
                 st.info("Vol local détecté (Distance 0). Entrez la durée du vol manuellement.")
                 temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0, value=45, key=f"tps_local_{pt_dep['id']}")
@@ -225,19 +223,38 @@ with tab_nav:
                 
                 st.write(f"📏 **Route Vraie (Rv) : {int(rv_calc)}°** | **Distance : {round(dist_calc, 1)} Nm** | **Déclinaison locale : {declinaison:.1f}°**")
                 
-                col_phase, col_vp, col_wdir, col_wforce = st.columns(4)
+                # Organisation des champs
+                col_phase, col_ias, col_wdir, col_wforce = st.columns(4)
+                
                 phase = col_phase.selectbox("Phase de vol", ["Croisière", "Montée", "Descente"], key=f"phase_{pt_dep['id']}")
-                
-                default_vp = 204
-                if phase == "Montée": default_vp = 140
-                elif phase == "Descente": default_vp = 175
-                
-                vp_kmh = col_vp.number_input("Vp (km/h)", value=default_vp, step=5, key=f"vp_{pt_dep['id']}")
-                vp_kt = vp_kmh / 1.852
-                
                 vent_dir = col_wdir.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, key=f"wdir_{pt_dep['id']}")
                 vent_force = col_wforce.number_input(f"Vent Force (kt)", min_value=0, value=0, key=f"wforce_{pt_dep['id']}")
                 
+                # Mathématiques de projection horizontale (Vp)
+                if phase == "Croisière":
+                    ias_kmh = col_ias.number_input("IAS (km/h)", value=204, step=5, key=f"ias_{pt_dep['id']}")
+                    vp_kmh = float(ias_kmh) # En palier, la Vp horizontale = IAS
+                    st.info(f"Vp horizontale (projection de l'IAS) : **{vp_kmh:.0f} km/h**")
+                    
+                elif phase == "Montée":
+                    col_ias.text_input("IAS (km/h)", value="140 (Fixe)", disabled=True, key=f"ias_{pt_dep['id']}")
+                    vp_kmh = 138.0 # Valeur empirique calculée : 46km / 20min
+                    st.info(f"Vp horizontale déduite de la pente : **{vp_kmh:.0f} km/h**")
+                    
+                elif phase == "Descente":
+                    ias_kmh = col_ias.number_input("IAS (km/h)", value=175, step=5, key=f"ias_{pt_dep['id']}")
+                    vz_ftmin = st.number_input("Taux de descente (ft/min)", value=-500, step=50, max_value=0, key=f"vz_{pt_dep['id']}")
+                    
+                    # Vp_horiz = sqrt(IAS² - Vz_kmh²)
+                    vz_kmh = abs(vz_ftmin) * 0.018288 # Conversion ft/min -> km/h
+                    if ias_kmh > vz_kmh:
+                        vp_kmh = math.sqrt(ias_kmh**2 - vz_kmh**2)
+                    else:
+                        vp_kmh = 0.0
+                    st.info(f"Vp horizontale calculée par Pythagore : **{vp_kmh:.0f} km/h**")
+
+                # Application au triangle des vitesses (la Vp est convertie en noeuds)
+                vp_kt = vp_kmh / 1.852
                 cv, derive, vs = calculer_triangle_vitesses(rv_calc, vp_kt, vent_dir, vent_force)
                 cm = (cv - declinaison) % 360
                 
@@ -245,29 +262,14 @@ with tab_nav:
                 cc = interpoler_cap_compas(cm, table_dev_avion)
                 temps_vol_min = (dist_calc / vs) * 60 if vs > 0 else 0
 
-                if phase == "Descente":
-                    st.markdown("---")
-                    st.caption("📉 **Profil de descente**")
-                    col_vz, col_pente = st.columns(2)
-                    mode_desc = col_vz.radio("Définir la descente par :", ["Vz cible (ft/min)", "Pente cible (%)"], horizontal=True, key=f"mode_desc_{pt_dep['id']}")
-                    
-                    if mode_desc == "Vz cible (ft/min)":
-                        vz = col_pente.number_input("Vz (ft/min)", value=-500, step=50, key=f"vz_{pt_dep['id']}")
-                        pente = (vz / (vs * 101.26)) if vs > 0 else 0
-                        st.info(f"👉 Avec {vs:.0f} kt de Vitesse Sol, la pente résultante est de **{pente:.1f} %**")
-                    else:
-                        pente = col_pente.number_input("Pente (%)", value=-5.0, step=0.5, key=f"pente_{pt_dep['id']}")
-                        vz = pente * vs * 101.26
-                        st.info(f"👉 Avec {vs:.0f} kt de Vitesse Sol, vous devez maintenir **{vz:.0f} ft/min**")
-
-            # Calcul direct du carburant consommé pour cette branche avec marge de sécurité
+            # Calcul du carburant consommé pour cette branche
             conso_horaire = CONSO_PHASES_L_H.get(phase, 25.0)
             conso_branche = (temps_vol_min / 60.0) * conso_horaire * MARGE_CONSO
             conso_branches_litres.append(conso_branche)
             
             log_nav_data.append({
                 "De": pt_dep["nom"], "Vers": pt_arr["nom"],
-                "Phase": phase, "Vp": int(vp_kmh) if dist_calc > 0 else "-",
+                "Phase": phase, "Vp (km/h)": int(vp_kmh) if dist_calc > 0 else "-",
                 "Rv (°)": int(rv_calc) if dist_calc > 0 else "-", 
                 "Dist (Nm)": round(dist_calc, 1),
                 "Vent": f"{int(vent_dir)}° / {int(vent_force)}kt" if dist_calc > 0 else "-",
