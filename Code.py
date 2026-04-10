@@ -200,7 +200,6 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
                         st.session_state[f"wdir_{pid}"] = int(b.get("wdir", 0))
                         st.session_state[f"wforce_{pid}"] = int(b.get("wforce", 0))
                         
-                        # Valeur par défaut logique selon la phase importée (1000 ft/min en montée)
                         default_vz = 1000 if phase_b == "Montée" else (-500 if phase_b == "Descente" else 0)
                         st.session_state[f"vz_{pid}"] = int(b.get("vz", default_vz))
                         
@@ -320,7 +319,6 @@ with tab_nav:
                     vp_kmh = float(ias_kmh)
                 elif phase == "Montée":
                     ias_kmh = col_ias.number_input("IAS (km/h) [Fixe]", value=140, disabled=True, key=f"ias_{pt_dep['id']}")
-                    # Mise à jour avec la nouvelle valeur par défaut (1000 ft/min)
                     vz_ftmin = st.number_input("Taux de montée (ft/min)", value=1000, step=50, min_value=0, key=f"vz_{pt_dep['id']}")
                     vp_kmh = 138.0 
                 elif phase == "Descente":
@@ -478,7 +476,7 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
             pdf.cell(col_w[11], 8, clean_text(row["Temps"]), border=1, align='C')
             pdf.ln()
 
-        # --- PAGE 2 : MASSES, GRAPHIQUES ET CARTE ---
+        # --- PAGE 2 : TABLEAU DES MASSES ---
         pdf.add_page()
         
         pdf.set_font("Arial", 'B', 14)
@@ -501,14 +499,17 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
             pdf.cell(col_w_mass[5], 8, clean_text(row["Centrage"]), border=1, align='C')
             pdf.ln()
             
-        pdf.ln(5)
+        # --- PAGE 3 : GRAPHIQUES ET CARTE ---
+        pdf.add_page()
         pdf.set_font("Arial", 'B', 14)
         pdf.cell(0, 10, clean_text("Schémas d'exécution du vol"), 0, 1, 'L')
 
+        # Graphe de Centrage (à gauche)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_cg:
             fig_centrage.savefig(tmp_cg.name, format="png", bbox_inches="tight")
-            pdf.image(tmp_cg.name, x=10, y=85, w=130)
+            pdf.image(tmp_cg.name, x=10, y=30, w=130)
 
+        # Tracé Vectoriel Coloré (à droite)
         fig_map, ax_map = plt.subplots(figsize=(8, 5))
         lats = [pt["lat"] for pt in st.session_state.route]
         lons = [pt["lon"] for pt in st.session_state.route]
@@ -541,20 +542,24 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
             
             if vz_txt:
                 mid_lon, mid_lat = (lon1 + lon2) / 2, (lat1 + lat2) / 2
-                ax_map.annotate(vz_txt, (mid_lon, mid_lat), color=couleur, textcoords="offset points", xytext=(0,5), ha='center', fontsize=8, fontweight='bold', bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=couleur, lw=1, alpha=0.8))
+                # Réduction de la taille de police (fontsize=6) et du padding (pad=0.2)
+                ax_map.annotate(vz_txt, (mid_lon, mid_lat), color=couleur, textcoords="offset points", xytext=(0,5), ha='center', fontsize=6, fontweight='bold', bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=couleur, lw=1, alpha=0.8))
 
         legend_handles = [
             mlines.Line2D([], [], color='green', linestyle='--', label='Montée'),
             mlines.Line2D([], [], color='blue', linestyle='--', label='Croisière'),
             mlines.Line2D([], [], color='red', linestyle='--', label='Descente')
         ]
-        ax_map.legend(handles=legend_handles, loc='upper right', fontsize=8)
+        
+        # Légende placée à l'extérieur du graphique (à droite)
+        ax_map.legend(handles=legend_handles, bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
         ax_map.set_title("Tracé vectoriel de la route")
         ax_map.grid(True, linestyle=':')
 
+        # L'utilisation de bbox_inches="tight" permet de ne pas couper la légende déportée
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_map:
             fig_map.savefig(tmp_map.name, format="png", bbox_inches="tight")
-            pdf.image(tmp_map.name, x=150, y=85, w=130)
+            pdf.image(tmp_map.name, x=150, y=30, w=130)
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
             pdf.output(tmp_pdf.name)
