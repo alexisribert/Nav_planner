@@ -1,5 +1,5 @@
 import streamlit as st
-import matplotlib.pyplot as plt
+import matplotlib.subplots as plt
 import pandas as pd
 import math
 import uuid
@@ -166,10 +166,12 @@ if st.sidebar.button("🗑️ Vider la route (Repartir à zéro)", use_container
 # ==========================================
 # 5. ONGLETS PRINCIPAUX
 # ==========================================
+import matplotlib.pyplot as plt # Import local pour sécurité
 tab_nav, tab_carte, tab_centrage = st.tabs(["🗺️ Log de Navigation", "📍 Carte Interactive", "⚖️ Devis de Centrage"])
 
 # Liste pour stocker le volume exact de carburant consommé par branche
 conso_branches_litres = []
+temps_branches_min = []
 
 # ------------------------------------------
 # ONGLET 1 : LOG DE NAVIGATION
@@ -213,9 +215,14 @@ with tab_nav:
         with st.expander(f"Branche {i+1} : {pt_dep['nom']} ➔ {pt_arr['nom']}", expanded=True):
             if dist_calc == 0:
                 st.info("Vol local détecté (Distance 0). Entrez la durée du vol manuellement.")
-                temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0, value=45, key=f"tps_local_{pt_dep['id']}")
+                temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0.0, value=45.0, key=f"tps_local_{pt_dep['id']}")
                 phase = "Local"
                 vp_kmh, vent_dir, vent_force, cv, cm, cc, vs, declinaison = 0, 0, 0, 0, 0, 0, 0, 0
+                
+                # Formatage du temps manuellement entré
+                m = int(temps_vol_min)
+                s = int((temps_vol_min - m) * 60)
+                temps_str = f"{m:02d}m {s:02d}s"
             else:
                 lat_milieu = (pt_dep["lat"] + pt_arr["lat"]) / 2.0
                 lon_milieu = (pt_dep["lon"] + pt_arr["lon"]) / 2.0
@@ -233,27 +240,25 @@ with tab_nav:
                 # Mathématiques de projection horizontale (Vp)
                 if phase == "Croisière":
                     ias_kmh = col_ias.number_input("IAS (km/h)", value=204, step=5, key=f"ias_{pt_dep['id']}")
-                    vp_kmh = float(ias_kmh) # En palier, la Vp horizontale = IAS
+                    vp_kmh = float(ias_kmh)
                     st.info(f"Vp horizontale (projection de l'IAS) : **{vp_kmh:.0f} km/h**")
                     
                 elif phase == "Montée":
                     col_ias.text_input("IAS (km/h)", value="140 (Fixe)", disabled=True, key=f"ias_{pt_dep['id']}")
-                    vp_kmh = 138.0 # Valeur empirique calculée : 46km / 20min
+                    vp_kmh = 138.0 
                     st.info(f"Vp horizontale déduite de la pente : **{vp_kmh:.0f} km/h**")
                     
                 elif phase == "Descente":
                     ias_kmh = col_ias.number_input("IAS (km/h)", value=175, step=5, key=f"ias_{pt_dep['id']}")
                     vz_ftmin = st.number_input("Taux de descente (ft/min)", value=-500, step=50, max_value=0, key=f"vz_{pt_dep['id']}")
                     
-                    # Vp_horiz = sqrt(IAS² - Vz_kmh²)
-                    vz_kmh = abs(vz_ftmin) * 0.018288 # Conversion ft/min -> km/h
+                    vz_kmh = abs(vz_ftmin) * 0.018288 
                     if ias_kmh > vz_kmh:
                         vp_kmh = math.sqrt(ias_kmh**2 - vz_kmh**2)
                     else:
                         vp_kmh = 0.0
                     st.info(f"Vp horizontale calculée par Pythagore : **{vp_kmh:.0f} km/h**")
 
-                # Application au triangle des vitesses (la Vp est convertie en noeuds)
                 vp_kt = vp_kmh / 1.852
                 cv, derive, vs = calculer_triangle_vitesses(rv_calc, vp_kt, vent_dir, vent_force)
                 cm = (cv - declinaison) % 360
@@ -261,6 +266,14 @@ with tab_nav:
                 table_dev_avion = AIRCRAFT_DATA[avion_choisi]["table_deviation"]
                 cc = interpoler_cap_compas(cm, table_dev_avion)
                 temps_vol_min = (dist_calc / vs) * 60 if vs > 0 else 0
+                
+                # Formatage du temps calculé en Minutes et Secondes
+                m = int(temps_vol_min)
+                s = int((temps_vol_min - m) * 60)
+                temps_str = f"{m:02d}m {s:02d}s"
+
+            # Stockage précis en float pour calculs ultérieurs
+            temps_branches_min.append(temps_vol_min)
 
             # Calcul du carburant consommé pour cette branche
             conso_horaire = CONSO_PHASES_L_H.get(phase, 25.0)
@@ -277,12 +290,23 @@ with tab_nav:
                 "Cm (°)": int(cm) if dist_calc > 0 else "-", 
                 "Cc (°)": int(cc) if dist_calc > 0 else "-",
                 "Vs (kt)": int(vs) if dist_calc > 0 else "-", 
-                "Temps (min)": int(temps_vol_min)
+                "Temps": temps_str
             })
             
     if len(log_nav_data) > 0:
         st.markdown("#### Tableau de Marche (Log de Nav)")
         st.dataframe(pd.DataFrame(log_nav_data), use_container_width=True)
+        
+        # Calcul et affichage de la durée totale estimée
+        temps_total_min = sum(temps_branches_min)
+        heures_tot = int(temps_total_min // 60)
+        minutes_tot = int(temps_total_min % 60)
+        secondes_tot = int((temps_total_min - int(temps_total_min)) * 60)
+        
+        if heures_tot > 0:
+            st.success(f"**⏱️ Durée totale estimée du vol : {heures_tot} h {minutes_tot:02d} min {secondes_tot:02d} s**")
+        else:
+            st.success(f"**⏱️ Durée totale estimée du vol : {minutes_tot:02d} min {secondes_tot:02d} s**")
 
 # ------------------------------------------
 # ONGLET 2 : CARTE VFR (AJOUT INTERACTIF)
