@@ -16,6 +16,7 @@ DENSITE_AVGAS = 0.72
 CAPACITE_MAX_CARBURANT_L = 118.0  
 MARGE_CONSO = 1.10 # +10% de marge de sécurité
 
+# Consommation de base selon la phase de vol (en L/h)
 CONSO_PHASES_L_H = {
     "Montée": 30.0,
     "Croisière": 25.0,
@@ -78,18 +79,25 @@ def calculer_distance_et_cap(lat1, lon1, lat2, lon2):
     return distance, cap_vrai
 
 def calculer_triangle_vitesses(rv_deg, vp_kt, vent_dir_deg, vent_force_kt):
+    # Sécurité anti-crash si la Vp est nulle
+    if vp_kt <= 0:
+        return rv_deg, 0.0, 0.0
+        
     rv_rad, vent_dir_rad = math.radians(rv_deg), math.radians(vent_dir_deg)
     angle_au_vent = vent_dir_rad - rv_rad
     vent_traversier = vent_force_kt * math.sin(angle_au_vent)
     vent_effectif = vent_force_kt * math.cos(angle_au_vent)
+    
     try:
         derive_rad = math.asin(vent_traversier / vp_kt)
     except ValueError:
         derive_rad = 0
+        
     derive_deg = math.degrees(derive_rad)
     cv_deg = (rv_deg + derive_deg) % 360
     vs_kt = vp_kt * math.cos(derive_rad) - vent_effectif
-    return cv_deg, derive_deg, vs_kt
+    
+    return cv_deg, derive_deg, max(0.0, vs_kt)
 
 def interpoler_cap_compas(cm, table_deviation):
     cm_cible = 360 if (cm % 360 == 0 and cm > 0) else cm % 360
@@ -141,12 +149,10 @@ if "last_uploaded_file" not in st.session_state:
 # ==========================================
 st.sidebar.title("🛩️ EFB Aéroclub")
 
-# Liaison explicite de l'avion sélectionné au session_state
 avion_choisi = st.sidebar.selectbox("Avion sélectionné", list(AIRCRAFT_DATA.keys()), key="avion_choisi")
 
 # --- MODULE SAUVEGARDE / IMPORTATION ---
 with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
-    # 1. GÉNÉRATION DE L'EXPORT
     export_data = {
         "avion": avion_choisi,
         "route": st.session_state.route,
@@ -183,21 +189,17 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
     
     st.markdown("---")
     
-    # 2. GESTION DE L'IMPORTATION
     uploaded_file = st.file_uploader("Importer un fichier .efb", type=["efb", "json"])
     
     if uploaded_file is not None:
-        # On vérifie si ce fichier n'a pas déjà été traité pour éviter de boucler
         if st.session_state.last_uploaded_file != uploaded_file.file_id:
             try:
                 data_import = json.load(uploaded_file)
                 
-                # Réinjection des données globales
                 st.session_state.route = data_import["route"]
                 st.session_state.avion_choisi = data_import.get("avion", list(AIRCRAFT_DATA.keys())[0])
                 st.session_state.carb_init = data_import.get("carb_init", 70.0)
                 
-                # Réinjection des données spécifiques par point
                 for pt in data_import["route"]:
                     pid = pt['id']
                     if pid in data_import.get("branches", {}):
@@ -215,9 +217,8 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
                         st.session_state[f"pax_{pid}"] = p.get("pax", 140.0)
                         st.session_state[f"bag_{pid}"] = p.get("bag", 0.0)
                 
-                # Marque le fichier comme lu
                 st.session_state.last_uploaded_file = uploaded_file.file_id
-                st.rerun() # Force le rafraichissement visuel de l'interface
+                st.rerun() 
             except Exception as e:
                 st.error("Fichier corrompu ou invalide.")
 
