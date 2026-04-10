@@ -358,9 +358,12 @@ with tab_nav:
         st.dataframe(pd.DataFrame(log_nav_data), use_container_width=True)
 
 # ------------------------------------------
-# ONGLET 2 : CARTE VFR
+# ONGLET 2 : CARTE VFR & AJOUT DE POINTS
 # ------------------------------------------
 with tab_carte:
+    st.subheader("Visualisation et Ajout de points")
+    st.info("Cliquez n'importe où sur la carte pour insérer un nouveau point dans votre log de navigation.")
+
     if len(st.session_state.route) > 1:
         route_coords = [(pt["lat"], pt["lon"]) for pt in st.session_state.route]
         avg_lat = sum(p[0] for p in route_coords) / len(route_coords)
@@ -375,7 +378,45 @@ with tab_carte:
             couleur, icone = ("green", "plane-departure") if i==0 else ("red", "plane-arrival") if i==len(route_coords)-1 else ("blue", "map-marker")
             folium.Marker(location=[pt["lat"], pt["lon"]], popup=pt['nom'], icon=folium.Icon(color=couleur, icon=icone, prefix='fa')).add_to(m)
             
+        # Capture du clic avec Streamlit-Folium
         map_data = st_folium(m, width=1200, height=600, returned_objects=["last_clicked"])
+        
+        # --- RÉTABLISSEMENT DU MODULE D'AJOUT INTERACTIF ---
+        if map_data and map_data.get("last_clicked"):
+            lat_clic = map_data["last_clicked"]["lat"]
+            lon_clic = map_data["last_clicked"]["lng"]
+            str_clic = f"{lat_clic}-{lon_clic}"
+            
+            if st.session_state.last_map_added != str_clic:
+                with st.container(border=True):
+                    st.markdown("### ➕ Ajouter ce point à la route")
+                    st.write(f"📍 Coordonnées ciblées : Lat {lat_clic:.5f} / Lon {lon_clic:.5f}")
+                    
+                    c1, c2, c3 = st.columns([1, 2, 1])
+                    with c1:
+                        nom_nouveau = st.text_input("Nom du repère (ex: SW, LIL...)", "WPT")
+                    with c2:
+                        options_insert = []
+                        for i in range(len(st.session_state.route) - 1):
+                            pt_a = st.session_state.route[i]['nom']
+                            pt_b = st.session_state.route[i+1]['nom']
+                            options_insert.append(f"Branche {i+1} : Insérer entre {pt_a} et {pt_b}")
+                        options_insert.append("À la fin de la route (Nouvelle arrivée)")
+                        
+                        choix_insert = st.selectbox("Position d'insertion", options_insert)
+                    with c3:
+                        st.write("") 
+                        st.write("")
+                        if st.button("Valider l'ajout", use_container_width=True):
+                            nouveau_pt = create_point(nom_nouveau, lat_clic, lon_clic)
+                            if "À la fin" in choix_insert:
+                                st.session_state.route.append(nouveau_pt)
+                            else:
+                                idx = options_insert.index(choix_insert) + 1
+                                st.session_state.route.insert(idx, nouveau_pt)
+                                
+                            st.session_state.last_map_added = str_clic
+                            st.rerun()
 
 # ------------------------------------------
 # ONGLET 3 : DEVIS DE CENTRAGE
@@ -509,16 +550,25 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
             fig_centrage.savefig(tmp_cg.name, format="png", bbox_inches="tight")
             pdf.image(tmp_cg.name, x=10, y=30, w=130)
 
-        # Tracé Vectoriel Coloré (à droite)
+        # ---------------------------------------------------------
+        # ANALYSE ET TRACÉ VECTORIEL COLORÉ (À droite)
+        # ---------------------------------------------------------
         fig_map, ax_map = plt.subplots(figsize=(8, 5))
         lats = [pt["lat"] for pt in st.session_state.route]
         lons = [pt["lon"] for pt in st.session_state.route]
         noms = [pt["nom"] for pt in st.session_state.route]
         
+        # Dessin des points
         ax_map.scatter(lons, lats, color='black', zorder=5)
         for i, txt in enumerate(noms):
             ax_map.annotate(txt, (lons[i], lats[i]), textcoords="offset points", xytext=(0,5), ha='center', fontsize=9, fontweight='bold')
             
+        # Attributions dynamiques de couleurs selon la Vz
+        vz_color_map = {}
+        predefined_colors = ['#e6194B', '#3cb44b', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff']
+        color_idx = 0
+        
+        # Dessin des branches
         for i in range(len(st.session_state.route) - 1):
             pt1 = st.session_state.route[i]
             pt2 = st.session_state.route[i+1]
@@ -528,35 +578,47 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
             phase = st.session_state.get(f"phase_{pt1['id']}", "Croisière")
             vz = st.session_state.get(f"vz_{pt1['id']}", 0)
             
-            if phase == "Montée":
-                couleur = 'green'
-                vz_txt = f"+{int(vz)} ft/min" if vz > 0 else "+ Vz"
+            # Formulation du label de légende selon la Vz
+            if phase == "Croisière":
+                label = "Croisière"
+                vz_txt = ""
+            elif phase == "Montée":
+                label = f"Montée (+{int(abs(vz))} ft/min)"
+                vz_txt = f"+{int(abs(vz))}"
             elif phase == "Descente":
-                couleur = 'red'
-                vz_txt = f"{int(vz)} ft/min"
+                label = f"Descente (-{int(abs(vz))} ft/min)"
+                vz_txt = f"-{int(abs(vz))}"
             else:
-                couleur = 'blue'
+                label = "Local"
                 vz_txt = ""
                 
+            # Assignation de la couleur
+            if label not in vz_color_map:
+                if label == "Croisière":
+                    vz_color_map[label] = 'blue'
+                else:
+                    vz_color_map[label] = predefined_colors[color_idx % len(predefined_colors)]
+                    color_idx += 1
+                    
+            couleur = vz_color_map[label]
+            
+            # Tracé de la ligne
             ax_map.plot([lon1, lon2], [lat1, lat2], color=couleur, linewidth=2.5, linestyle='--')
             
+            # Annotation de la vitesse verticale sur la branche
             if vz_txt:
                 mid_lon, mid_lat = (lon1 + lon2) / 2, (lat1 + lat2) / 2
-                # Réduction de la taille de police (fontsize=6) et du padding (pad=0.2)
                 ax_map.annotate(vz_txt, (mid_lon, mid_lat), color=couleur, textcoords="offset points", xytext=(0,5), ha='center', fontsize=6, fontweight='bold', bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=couleur, lw=1, alpha=0.8))
 
-        legend_handles = [
-            mlines.Line2D([], [], color='green', linestyle='--', label='Montée'),
-            mlines.Line2D([], [], color='blue', linestyle='--', label='Croisière'),
-            mlines.Line2D([], [], color='red', linestyle='--', label='Descente')
-        ]
-        
-        # Légende placée à l'extérieur du graphique (à droite)
+        # Création dynamique de la légende déportée
+        legend_handles = []
+        for label, color in vz_color_map.items():
+            legend_handles.append(mlines.Line2D([], [], color=color, linestyle='--', label=label))
+            
         ax_map.legend(handles=legend_handles, bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
         ax_map.set_title("Tracé vectoriel de la route")
         ax_map.grid(True, linestyle=':')
 
-        # L'utilisation de bbox_inches="tight" permet de ne pas couper la légende déportée
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_map:
             fig_map.savefig(tmp_map.name, format="png", bbox_inches="tight")
             pdf.image(tmp_map.name, x=150, y=30, w=130)
