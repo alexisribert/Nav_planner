@@ -13,9 +13,15 @@ import pygeomag
 # ==========================================
 DENSITE_AVGAS = 0.72  
 CAPACITE_MAX_CARBURANT_L = 118.0  
-CONSO_BASE_L_H = 25.0
 MARGE_CONSO = 1.10 # +10% de marge de sécurité
-CONSO_EFFECTIVE_L_H = CONSO_BASE_L_H * MARGE_CONSO
+
+# Consommation de base selon la phase de vol (en L/h)
+CONSO_PHASES_L_H = {
+    "Montée": 30.0,
+    "Croisière": 25.0,
+    "Descente": 25.0,
+    "Local": 25.0
+}
 
 ENVELOPPE_CG = [0.22, 0.22, 0.32, 0.46, 0.46, 0.22]
 ENVELOPPE_MASSE = [500, 580, 780, 780, 500, 500]
@@ -100,17 +106,14 @@ def interpoler_cap_compas(cm, table_deviation):
     return (cm - deviation) % 360
 
 def calculer_declinaison(lat, lon):
-    """Calcule la déclinaison magnétique exacte via le modèle géomagnétique WMM"""
     try:
         geo_mag = pygeomag.GeoMag()
         now = datetime.now()
-        # L'API a besoin de l'année au format décimal (ex: 2024.3)
         annee_decimale = now.year + (now.timetuple().tm_yday / 365.25)
-        # Alt = 0 (Niveau de la mer, la différence est négligeable pour le VFR)
         result = geo_mag.calculate(glat=lat, glon=lon, alt=0, time=annee_decimale)
         return result.d
     except Exception:
-        return 0.0 # En cas d'erreur, on part du principe qu'elle est nulle.
+        return 0.0 
 
 def calculer_centrage(avion, masse_pilotes, masse_bagages, masse_carburant):
     data = AIRCRAFT_DATA[avion]
@@ -165,16 +168,13 @@ if st.sidebar.button("🗑️ Vider la route (Repartir à zéro)", use_container
 # ==========================================
 tab_nav, tab_carte, tab_centrage = st.tabs(["🗺️ Log de Navigation", "📍 Carte Interactive", "⚖️ Devis de Centrage"])
 
-temps_branches_min = [] 
+# Liste pour stocker le volume exact de carburant consommé par branche
+conso_branches_litres = []
 
 # ------------------------------------------
 # ONGLET 1 : LOG DE NAVIGATION
 # ------------------------------------------
 with tab_nav:
-    # On a supprimé le champ de déclinaison manuelle, on garde juste la vitesse propre
-    vp_nav_kmh = st.number_input("Vitesse Propre (Vp) en km/h", value=AIRCRAFT_DATA[avion_choisi]["vp_croisiere_kmh"])
-    vp_nav_kt = vp_nav_kmh / 1.852 
-    
     st.markdown("### 📍 Éditeur de la route")
     
     if len(st.session_state.route) == 0:
@@ -216,32 +216,58 @@ with tab_nav:
             if dist_calc == 0:
                 st.info("Vol local détecté (Distance 0). Entrez la durée du vol manuellement.")
                 temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0, value=45, key=f"tps_local_{pt_dep['id']}")
-                vent_dir, vent_force, cv, cm, cc, vs, declinaison = 0, 0, 0, 0, 0, 0, 0
+                phase = "Local"
+                vp_kmh, vent_dir, vent_force, cv, cm, cc, vs, declinaison = 0, 0, 0, 0, 0, 0, 0, 0
             else:
-                # Calcul de la déclinaison au milieu de la branche
                 lat_milieu = (pt_dep["lat"] + pt_arr["lat"]) / 2.0
                 lon_milieu = (pt_dep["lon"] + pt_arr["lon"]) / 2.0
                 declinaison = calculer_declinaison(lat_milieu, lon_milieu)
                 
-                # Affichage des infos incluant la déclinaison calculée
                 st.write(f"📏 **Route Vraie (Rv) : {int(rv_calc)}°** | **Distance : {round(dist_calc, 1)} Nm** | **Déclinaison locale : {declinaison:.1f}°**")
                 
-                vent_dir = col1.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, key=f"wdir_{pt_dep['id']}")
-                vent_force = col2.number_input(f"Vent Force (kt)", min_value=0, value=0, key=f"wforce_{pt_dep['id']}")
+                col_phase, col_vp, col_wdir, col_wforce = st.columns(4)
+                phase = col_phase.selectbox("Phase de vol", ["Croisière", "Montée", "Descente"], key=f"phase_{pt_dep['id']}")
                 
-                cv, derive, vs = calculer_triangle_vitesses(rv_calc, vp_nav_kt, vent_dir, vent_force)
+                default_vp = 204
+                if phase == "Montée": default_vp = 140
+                elif phase == "Descente": default_vp = 175
                 
-                # Application de la déclinaison calculée automatiquement
+                vp_kmh = col_vp.number_input("Vp (km/h)", value=default_vp, step=5, key=f"vp_{pt_dep['id']}")
+                vp_kt = vp_kmh / 1.852
+                
+                vent_dir = col_wdir.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, key=f"wdir_{pt_dep['id']}")
+                vent_force = col_wforce.number_input(f"Vent Force (kt)", min_value=0, value=0, key=f"wforce_{pt_dep['id']}")
+                
+                cv, derive, vs = calculer_triangle_vitesses(rv_calc, vp_kt, vent_dir, vent_force)
                 cm = (cv - declinaison) % 360
                 
                 table_dev_avion = AIRCRAFT_DATA[avion_choisi]["table_deviation"]
                 cc = interpoler_cap_compas(cm, table_dev_avion)
                 temps_vol_min = (dist_calc / vs) * 60 if vs > 0 else 0
-            
-            temps_branches_min.append(temps_vol_min)
+
+                if phase == "Descente":
+                    st.markdown("---")
+                    st.caption("📉 **Profil de descente**")
+                    col_vz, col_pente = st.columns(2)
+                    mode_desc = col_vz.radio("Définir la descente par :", ["Vz cible (ft/min)", "Pente cible (%)"], horizontal=True, key=f"mode_desc_{pt_dep['id']}")
+                    
+                    if mode_desc == "Vz cible (ft/min)":
+                        vz = col_pente.number_input("Vz (ft/min)", value=-500, step=50, key=f"vz_{pt_dep['id']}")
+                        pente = (vz / (vs * 101.26)) if vs > 0 else 0
+                        st.info(f"👉 Avec {vs:.0f} kt de Vitesse Sol, la pente résultante est de **{pente:.1f} %**")
+                    else:
+                        pente = col_pente.number_input("Pente (%)", value=-5.0, step=0.5, key=f"pente_{pt_dep['id']}")
+                        vz = pente * vs * 101.26
+                        st.info(f"👉 Avec {vs:.0f} kt de Vitesse Sol, vous devez maintenir **{vz:.0f} ft/min**")
+
+            # Calcul direct du carburant consommé pour cette branche avec marge de sécurité
+            conso_horaire = CONSO_PHASES_L_H.get(phase, 25.0)
+            conso_branche = (temps_vol_min / 60.0) * conso_horaire * MARGE_CONSO
+            conso_branches_litres.append(conso_branche)
             
             log_nav_data.append({
                 "De": pt_dep["nom"], "Vers": pt_arr["nom"],
+                "Phase": phase, "Vp": int(vp_kmh) if dist_calc > 0 else "-",
                 "Rv (°)": int(rv_calc) if dist_calc > 0 else "-", 
                 "Dist (Nm)": round(dist_calc, 1),
                 "Vent": f"{int(vent_dir)}° / {int(vent_force)}kt" if dist_calc > 0 else "-",
@@ -344,7 +370,7 @@ with tab_centrage:
     if len(st.session_state.route) == 0:
         st.warning("Ajoutez des points à la route pour calculer le centrage.")
     else:
-        st.info(f"Le carburant aux étapes intermédiaires est calculé automatiquement (Conso {CONSO_BASE_L_H} L/h + {int((MARGE_CONSO-1)*100)}%, soit {CONSO_EFFECTIVE_L_H:.1f} L/h).")
+        st.info(f"Le carburant aux étapes intermédiaires est déduit automatiquement (Montée: 30 L/h, Croisière/Descente: 25 L/h + {int((MARGE_CONSO-1)*100)}% de marge).")
         
         resultats_centrage = []
         colonnes_centrage = st.columns(len(st.session_state.route))
@@ -360,8 +386,7 @@ with tab_centrage:
                     carb_litres = st.number_input(f"Carburant Initial (L)", min_value=0.0, max_value=CAPACITE_MAX_CARBURANT_L, value=70.0, step=1.0, key=f"carb_init")
                     carb_restant_list.append(carb_litres)
                 else:
-                    temps_etape = temps_branches_min[i-1] if len(temps_branches_min) > i-1 else 0
-                    conso_litres = (temps_etape / 60.0) * CONSO_EFFECTIVE_L_H
+                    conso_litres = conso_branches_litres[i-1] if len(conso_branches_litres) > i-1 else 0.0
                     carb_litres = max(0.0, carb_restant_list[-1] - conso_litres)
                     carb_restant_list.append(carb_litres)
                     
