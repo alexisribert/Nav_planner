@@ -1,5 +1,5 @@
 import streamlit as st
-import matplotlib.subplots as plt
+import matplotlib.pyplot as plt
 import pandas as pd
 import math
 import uuid
@@ -166,7 +166,6 @@ if st.sidebar.button("🗑️ Vider la route (Repartir à zéro)", use_container
 # ==========================================
 # 5. ONGLETS PRINCIPAUX
 # ==========================================
-import matplotlib.pyplot as plt # Import local pour sécurité
 tab_nav, tab_carte, tab_centrage = st.tabs(["🗺️ Log de Navigation", "📍 Carte Interactive", "⚖️ Devis de Centrage"])
 
 # Liste pour stocker le volume exact de carburant consommé par branche
