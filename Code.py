@@ -7,6 +7,7 @@ import folium
 import json
 import tempfile
 import os
+import matplotlib.lines as mlines
 from streamlit_folium import st_folium
 from datetime import datetime
 import pygeomag
@@ -168,7 +169,7 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
             "wdir": st.session_state.get(f"wdir_{pid}", 0),
             "wforce": st.session_state.get(f"wforce_{pid}", 0),
             "ias": st.session_state.get(f"ias_{pid}", 204),
-            "vz": st.session_state.get(f"vz_{pid}", -500),
+            "vz": st.session_state.get(f"vz_{pid}", 0),
             "tps_local": st.session_state.get(f"tps_local_{pid}", 45.0)
         }
         export_data["poids"][pid] = {
@@ -194,10 +195,15 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
                     pid = pt['id']
                     if pid in data_import.get("branches", {}):
                         b = data_import["branches"][pid]
-                        st.session_state[f"phase_{pid}"] = str(b.get("phase", "Croisière"))
+                        phase_b = str(b.get("phase", "Croisière"))
+                        st.session_state[f"phase_{pid}"] = phase_b
                         st.session_state[f"wdir_{pid}"] = int(b.get("wdir", 0))
                         st.session_state[f"wforce_{pid}"] = int(b.get("wforce", 0))
-                        st.session_state[f"vz_{pid}"] = int(b.get("vz", -500))
+                        
+                        # Valeur par défaut logique selon la phase importée (1000 ft/min en montée)
+                        default_vz = 1000 if phase_b == "Montée" else (-500 if phase_b == "Descente" else 0)
+                        st.session_state[f"vz_{pid}"] = int(b.get("vz", default_vz))
+                        
                         st.session_state[f"tps_local_{pid}"] = float(b.get("tps_local", 45.0))
                         
                         raw_ias = b.get("ias", 204)
@@ -246,7 +252,8 @@ tab_nav, tab_carte, tab_centrage = st.tabs(["🗺️ Log de Navigation", "📍 C
 conso_branches_litres = []
 temps_branches_min = []
 log_nav_data = []
-fig_centrage = None # Pour sauvegarder la figure globalement
+mass_pdf_data = [] 
+fig_centrage = None 
 
 # ------------------------------------------
 # ONGLET 1 : LOG DE NAVIGATION
@@ -313,6 +320,8 @@ with tab_nav:
                     vp_kmh = float(ias_kmh)
                 elif phase == "Montée":
                     ias_kmh = col_ias.number_input("IAS (km/h) [Fixe]", value=140, disabled=True, key=f"ias_{pt_dep['id']}")
+                    # Mise à jour avec la nouvelle valeur par défaut (1000 ft/min)
+                    vz_ftmin = st.number_input("Taux de montée (ft/min)", value=1000, step=50, min_value=0, key=f"vz_{pt_dep['id']}")
                     vp_kmh = 138.0 
                 elif phase == "Descente":
                     ias_kmh = col_ias.number_input("IAS (km/h)", value=175, step=5, key=f"ias_{pt_dep['id']}")
@@ -395,6 +404,15 @@ with tab_centrage:
                 carb_kg = carb_litres * DENSITE_AVGAS
                 masse, cg = calculer_centrage(avion_choisi, pax, bag, carb_kg)
                 resultats_centrage.append({"Etape": pt['nom'], "Masse": masse, "CG": cg})
+                
+                mass_pdf_data.append({
+                    "Etape": pt['nom'],
+                    "Pax": f"{pax:.1f}",
+                    "Bagages": f"{bag:.1f}",
+                    "Carburant": f"{carb_litres:.1f}",
+                    "Masse_Totale": f"{masse:.1f}",
+                    "Centrage": f"{cg:.3f}"
+                })
 
         fig_centrage, ax = plt.subplots(figsize=(8, 5))
         ax.plot(ENVELOPPE_CG, ENVELOPPE_MASSE, 'r-', linewidth=2)
@@ -415,7 +433,6 @@ with tab_centrage:
         ax.grid(True, linestyle=':', alpha=0.7)
         st.pyplot(fig_centrage)
 
-
 # ==========================================
 # 6. GÉNÉRATION DU DOSSIER DE VOL (PDF)
 # ==========================================
@@ -426,7 +443,6 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
     if st.button("📄 Générer le fichier PDF", use_container_width=True):
         
         def clean_text(text):
-            """Sécurise les accents pour FPDF"""
             return str(text).encode('latin-1', 'replace').decode('latin-1')
 
         pdf = FPDF(orientation='L', unit='mm', format='A4')
@@ -442,12 +458,10 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
         headers = ["De", "Vers", "Phase", "Vp", "Rv", "Dist", "Vent", "Cv", "Cm", "Cc", "Vs", "Temps"]
         col_w = [25, 25, 22, 18, 15, 18, 25, 15, 15, 15, 15, 22]
 
-        # En-têtes du tableau
         for i, h in enumerate(headers):
             pdf.cell(col_w[i], 8, clean_text(h), border=1, align='C')
         pdf.ln()
 
-        # Remplissage du tableau
         pdf.set_font("Arial", '', 10)
         for row in log_nav_data:
             pdf.cell(col_w[0], 8, clean_text(row["De"]), border=1, align='C')
@@ -464,41 +478,92 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
             pdf.cell(col_w[11], 8, clean_text(row["Temps"]), border=1, align='C')
             pdf.ln()
 
-        # --- PAGE 2 : GRAPHIQUES ---
+        # --- PAGE 2 : MASSES, GRAPHIQUES ET CARTE ---
         pdf.add_page()
+        
         pdf.set_font("Arial", 'B', 14)
-        pdf.cell(0, 10, clean_text("Devis de Masse et Centrage & Schéma de la route"), 0, 1, 'L')
+        pdf.cell(0, 10, clean_text("Tableau des Masses et Centrage"), 0, 1, 'L')
+        
+        pdf.set_font("Arial", 'B', 10)
+        headers_mass = ["Etape", "Pilote+Pax (kg)", "Bagages (kg)", "Carburant (L)", "Masse Tot. (kg)", "Centrage (m)"]
+        col_w_mass = [40, 35, 30, 30, 35, 35]
+        for i, h in enumerate(headers_mass):
+            pdf.cell(col_w_mass[i], 8, clean_text(h), border=1, align='C')
+        pdf.ln()
+        
+        pdf.set_font("Arial", '', 10)
+        for row in mass_pdf_data:
+            pdf.cell(col_w_mass[0], 8, clean_text(row["Etape"]), border=1, align='C')
+            pdf.cell(col_w_mass[1], 8, clean_text(row["Pax"]), border=1, align='C')
+            pdf.cell(col_w_mass[2], 8, clean_text(row["Bagages"]), border=1, align='C')
+            pdf.cell(col_w_mass[3], 8, clean_text(row["Carburant"]), border=1, align='C')
+            pdf.cell(col_w_mass[4], 8, clean_text(row["Masse_Totale"]), border=1, align='C')
+            pdf.cell(col_w_mass[5], 8, clean_text(row["Centrage"]), border=1, align='C')
+            pdf.ln()
+            
         pdf.ln(5)
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(0, 10, clean_text("Schémas d'exécution du vol"), 0, 1, 'L')
 
-        # 1. Sauvegarde et insertion du Graphe de Centrage
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_cg:
             fig_centrage.savefig(tmp_cg.name, format="png", bbox_inches="tight")
-            pdf.image(tmp_cg.name, x=10, y=30, w=130)
+            pdf.image(tmp_cg.name, x=10, y=85, w=130)
 
-        # 2. Génération et insertion du Tracé Vectoriel de la Route
         fig_map, ax_map = plt.subplots(figsize=(8, 5))
         lats = [pt["lat"] for pt in st.session_state.route]
         lons = [pt["lon"] for pt in st.session_state.route]
         noms = [pt["nom"] for pt in st.session_state.route]
-        ax_map.plot(lons, lats, color='#FF00FF', linewidth=2, linestyle='--', marker='o')
+        
+        ax_map.scatter(lons, lats, color='black', zorder=5)
         for i, txt in enumerate(noms):
-            ax_map.annotate(txt, (lons[i], lats[i]), textcoords="offset points", xytext=(0,5), ha='center')
+            ax_map.annotate(txt, (lons[i], lats[i]), textcoords="offset points", xytext=(0,5), ha='center', fontsize=9, fontweight='bold')
+            
+        for i in range(len(st.session_state.route) - 1):
+            pt1 = st.session_state.route[i]
+            pt2 = st.session_state.route[i+1]
+            lon1, lat1 = pt1["lon"], pt1["lat"]
+            lon2, lat2 = pt2["lon"], pt2["lat"]
+            
+            phase = st.session_state.get(f"phase_{pt1['id']}", "Croisière")
+            vz = st.session_state.get(f"vz_{pt1['id']}", 0)
+            
+            if phase == "Montée":
+                couleur = 'green'
+                vz_txt = f"+{int(vz)} ft/min" if vz > 0 else "+ Vz"
+            elif phase == "Descente":
+                couleur = 'red'
+                vz_txt = f"{int(vz)} ft/min"
+            else:
+                couleur = 'blue'
+                vz_txt = ""
+                
+            ax_map.plot([lon1, lon2], [lat1, lat2], color=couleur, linewidth=2.5, linestyle='--')
+            
+            if vz_txt:
+                mid_lon, mid_lat = (lon1 + lon2) / 2, (lat1 + lat2) / 2
+                ax_map.annotate(vz_txt, (mid_lon, mid_lat), color=couleur, textcoords="offset points", xytext=(0,5), ha='center', fontsize=8, fontweight='bold', bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=couleur, lw=1, alpha=0.8))
+
+        legend_handles = [
+            mlines.Line2D([], [], color='green', linestyle='--', label='Montée'),
+            mlines.Line2D([], [], color='blue', linestyle='--', label='Croisière'),
+            mlines.Line2D([], [], color='red', linestyle='--', label='Descente')
+        ]
+        ax_map.legend(handles=legend_handles, loc='upper right', fontsize=8)
         ax_map.set_title("Tracé vectoriel de la route")
         ax_map.grid(True, linestyle=':')
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_map:
             fig_map.savefig(tmp_map.name, format="png", bbox_inches="tight")
-            pdf.image(tmp_map.name, x=150, y=30, w=130)
+            pdf.image(tmp_map.name, x=150, y=85, w=130)
 
-        # Finalisation du fichier PDF de manière sécurisée
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
             pdf.output(tmp_pdf.name)
             with open(tmp_pdf.name, "rb") as f:
                 pdf_bytes = f.read()
 
-        st.success("✅ Document généré avec succès !")
+        st.success("✅ Document PDF généré avec succès !")
         st.download_button(
-            label="📥 Télécharger le Dossier (PDF)",
+            label="📥 Télécharger le Dossier de Vol (PDF)",
             data=pdf_bytes,
             file_name=f"Dossier_Vol_{avion_choisi}_{datetime.now().strftime('%d%m%Y')}.pdf",
             mime="application/pdf",
