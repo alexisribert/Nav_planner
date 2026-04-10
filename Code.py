@@ -168,7 +168,6 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
             "wforce": st.session_state.get(f"wforce_{pid}", 0),
             "ias": st.session_state.get(f"ias_{pid}", 204),
             "vz": st.session_state.get(f"vz_{pid}", -500),
-            "pente": st.session_state.get(f"pente_{pid}", -5.0),
             "tps_local": st.session_state.get(f"tps_local_{pid}", 45.0)
         }
         export_data["poids"][pid] = {
@@ -194,33 +193,34 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
     if uploaded_file is not None:
         if st.session_state.last_uploaded_file != uploaded_file.file_id:
             try:
-                data_import = json.load(uploaded_file)
+                # Lecture stricte du JSON
+                data_import = json.loads(uploaded_file.getvalue().decode("utf-8"))
                 
                 st.session_state.route = data_import["route"]
                 st.session_state.avion_choisi = data_import.get("avion", list(AIRCRAFT_DATA.keys())[0])
-                st.session_state.carb_init = data_import.get("carb_init", 70.0)
+                st.session_state["carb_init"] = float(data_import.get("carb_init", 70.0))
                 
+                # Réinjection avec transtypage explicite pour éviter les crashs Streamlit
                 for pt in data_import["route"]:
                     pid = pt['id']
                     if pid in data_import.get("branches", {}):
                         b = data_import["branches"][pid]
-                        st.session_state[f"phase_{pid}"] = b.get("phase", "Croisière")
-                        st.session_state[f"wdir_{pid}"] = b.get("wdir", 0)
-                        st.session_state[f"wforce_{pid}"] = b.get("wforce", 0)
-                        st.session_state[f"ias_{pid}"] = b.get("ias", 204)
-                        st.session_state[f"vz_{pid}"] = b.get("vz", -500)
-                        st.session_state[f"pente_{pid}"] = b.get("pente", -5.0)
-                        st.session_state[f"tps_local_{pid}"] = b.get("tps_local", 45.0)
+                        st.session_state[f"phase_{pid}"] = str(b.get("phase", "Croisière"))
+                        st.session_state[f"wdir_{pid}"] = int(b.get("wdir", 0))
+                        st.session_state[f"wforce_{pid}"] = int(b.get("wforce", 0))
+                        st.session_state[f"ias_{pid}"] = int(b.get("ias", 204))
+                        st.session_state[f"vz_{pid}"] = int(b.get("vz", -500))
+                        st.session_state[f"tps_local_{pid}"] = float(b.get("tps_local", 45.0))
                     
                     if pid in data_import.get("poids", {}):
                         p = data_import["poids"][pid]
-                        st.session_state[f"pax_{pid}"] = p.get("pax", 140.0)
-                        st.session_state[f"bag_{pid}"] = p.get("bag", 0.0)
+                        st.session_state[f"pax_{pid}"] = float(p.get("pax", 140.0))
+                        st.session_state[f"bag_{pid}"] = float(p.get("bag", 0.0))
                 
                 st.session_state.last_uploaded_file = uploaded_file.file_id
                 st.rerun() 
             except Exception as e:
-                st.error("Fichier corrompu ou invalide.")
+                st.error(f"Fichier invalide. Raison technique : {e}")
 
 st.sidebar.markdown("---")
 st.sidebar.header("1. Initialiser la Route")
@@ -295,7 +295,7 @@ with tab_nav:
         with st.expander(f"Branche {i+1} : {pt_dep['nom']} ➔ {pt_arr['nom']}", expanded=True):
             if dist_calc == 0:
                 st.info("Vol local détecté (Distance 0). Entrez la durée du vol manuellement.")
-                temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0.0, step=1.0, key=f"tps_local_{pt_dep['id']}")
+                temps_vol_min = st.number_input("Durée du vol local (min)", min_value=0.0, value=45.0, step=1.0, key=f"tps_local_{pt_dep['id']}")
                 phase = "Local"
                 vp_kmh, vent_dir, vent_force, cv, cm, cc, vs, declinaison = 0, 0, 0, 0, 0, 0, 0, 0
                 
@@ -312,11 +312,11 @@ with tab_nav:
                 col_phase, col_ias, col_wdir, col_wforce = st.columns(4)
                 
                 phase = col_phase.selectbox("Phase de vol", ["Croisière", "Montée", "Descente"], key=f"phase_{pt_dep['id']}")
-                vent_dir = col_wdir.number_input(f"Vent Dir (°)", min_value=0, max_value=360, step=5, key=f"wdir_{pt_dep['id']}")
-                vent_force = col_wforce.number_input(f"Vent Force (kt)", min_value=0, step=1, key=f"wforce_{pt_dep['id']}")
+                vent_dir = col_wdir.number_input(f"Vent Dir (°)", min_value=0, max_value=360, value=0, step=5, key=f"wdir_{pt_dep['id']}")
+                vent_force = col_wforce.number_input(f"Vent Force (kt)", min_value=0, value=0, step=1, key=f"wforce_{pt_dep['id']}")
                 
                 if phase == "Croisière":
-                    ias_kmh = col_ias.number_input("IAS (km/h)", step=5, key=f"ias_{pt_dep['id']}")
+                    ias_kmh = col_ias.number_input("IAS (km/h)", value=204, step=5, key=f"ias_{pt_dep['id']}")
                     vp_kmh = float(ias_kmh)
                     st.info(f"Vp horizontale (projection de l'IAS) : **{vp_kmh:.0f} km/h**")
                     
@@ -326,8 +326,8 @@ with tab_nav:
                     st.info(f"Vp horizontale déduite de la pente : **{vp_kmh:.0f} km/h**")
                     
                 elif phase == "Descente":
-                    ias_kmh = col_ias.number_input("IAS (km/h)", step=5, key=f"ias_{pt_dep['id']}")
-                    vz_ftmin = st.number_input("Taux de descente (ft/min)", step=50, max_value=0, key=f"vz_{pt_dep['id']}")
+                    ias_kmh = col_ias.number_input("IAS (km/h)", value=175, step=5, key=f"ias_{pt_dep['id']}")
+                    vz_ftmin = st.number_input("Taux de descente (ft/min)", value=-500, step=50, max_value=0, key=f"vz_{pt_dep['id']}")
                     
                     vz_kmh = abs(vz_ftmin) * 0.018288 
                     if ias_kmh > vz_kmh:
@@ -478,11 +478,11 @@ with tab_centrage:
         for i, pt in enumerate(st.session_state.route):
             with colonnes_centrage[i]:
                 st.markdown(f"**{pt['nom']}**")
-                pax = st.number_input(f"Pilote + Pax (kg)", min_value=0.0, step=1.0, key=f"pax_{pt['id']}")
-                bag = st.number_input(f"Bagages (kg)", min_value=0.0, max_value=35.0, step=1.0, key=f"bag_{pt['id']}")
+                pax = st.number_input(f"Pilote + Pax (kg)", min_value=0.0, value=140.0, step=1.0, key=f"pax_{pt['id']}")
+                bag = st.number_input(f"Bagages (kg)", min_value=0.0, max_value=35.0, value=0.0, step=1.0, key=f"bag_{pt['id']}")
                 
                 if i == 0:
-                    carb_litres = st.number_input(f"Carburant Initial (L)", min_value=0.0, max_value=CAPACITE_MAX_CARBURANT_L, step=1.0, key=f"carb_init")
+                    carb_litres = st.number_input(f"Carburant Initial (L)", min_value=0.0, max_value=CAPACITE_MAX_CARBURANT_L, value=70.0, step=1.0, key=f"carb_init")
                     carb_restant_list.append(carb_litres)
                 else:
                     conso_litres = conso_branches_litres[i-1] if len(conso_branches_litres) > i-1 else 0.0
