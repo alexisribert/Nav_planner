@@ -202,7 +202,6 @@ with st.sidebar.expander("💾 Sauvegarder / Importer", expanded=False):
                         
                         default_vz = 1000 if phase_b == "Montée" else (-500 if phase_b == "Descente" else 0)
                         st.session_state[f"vz_{pid}"] = int(b.get("vz", default_vz))
-                        
                         st.session_state[f"tps_local_{pid}"] = float(b.get("tps_local", 45.0))
                         
                         raw_ias = b.get("ias", 204)
@@ -356,6 +355,17 @@ with tab_nav:
     if len(log_nav_data) > 0:
         st.markdown("#### Tableau de Marche")
         st.dataframe(pd.DataFrame(log_nav_data), use_container_width=True)
+        
+        # --- RÉTABLISSEMENT DE LA SOMME DES DURÉES ---
+        temps_total_min = sum(temps_branches_min)
+        heures_tot = int(temps_total_min // 60)
+        minutes_tot = int(temps_total_min % 60)
+        secondes_tot = int((temps_total_min - int(temps_total_min)) * 60)
+        
+        if heures_tot > 0:
+            st.success(f"**⏱️ Durée totale estimée du vol : {heures_tot} h {minutes_tot:02d} min {secondes_tot:02d} s**")
+        else:
+            st.success(f"**⏱️ Durée totale estimée du vol : {minutes_tot:02d} min {secondes_tot:02d} s**")
 
 # ------------------------------------------
 # ONGLET 2 : CARTE VFR & AJOUT DE POINTS
@@ -378,10 +388,8 @@ with tab_carte:
             couleur, icone = ("green", "plane-departure") if i==0 else ("red", "plane-arrival") if i==len(route_coords)-1 else ("blue", "map-marker")
             folium.Marker(location=[pt["lat"], pt["lon"]], popup=pt['nom'], icon=folium.Icon(color=couleur, icon=icone, prefix='fa')).add_to(m)
             
-        # Capture du clic avec Streamlit-Folium
         map_data = st_folium(m, width=1200, height=600, returned_objects=["last_clicked"])
         
-        # --- RÉTABLISSEMENT DU MODULE D'AJOUT INTERACTIF ---
         if map_data and map_data.get("last_clicked"):
             lat_clic = map_data["last_clicked"]["lat"]
             lon_clic = map_data["last_clicked"]["lng"]
@@ -436,7 +444,8 @@ with tab_centrage:
                     carb_litres = st.number_input(f"Carburant Initial", value=70.0, key=f"carb_init")
                     carb_restant_list.append(carb_litres)
                 else:
-                    carb_litres = max(0.0, carb_restant_list[-1] - conso_branches_litres[i-1])
+                    conso_litres = conso_branches_litres[i-1] if len(conso_branches_litres) > i-1 else 0.0
+                    carb_litres = max(0.0, carb_restant_list[-1] - conso_litres)
                     carb_restant_list.append(carb_litres)
                     st.text_input(f"Carburant (L)", value=f"{carb_litres:.1f}", disabled=True, key=f"cauto_{pt['id']}")
                 
@@ -519,7 +528,6 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
 
         # --- PAGE 2 : TABLEAU DES MASSES ---
         pdf.add_page()
-        
         pdf.set_font("Arial", 'B', 14)
         pdf.cell(0, 10, clean_text("Tableau des Masses et Centrage"), 0, 1, 'L')
         
@@ -545,30 +553,23 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
         pdf.set_font("Arial", 'B', 14)
         pdf.cell(0, 10, clean_text("Schémas d'exécution du vol"), 0, 1, 'L')
 
-        # Graphe de Centrage (à gauche)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_cg:
             fig_centrage.savefig(tmp_cg.name, format="png", bbox_inches="tight")
             pdf.image(tmp_cg.name, x=10, y=30, w=130)
 
-        # ---------------------------------------------------------
-        # ANALYSE ET TRACÉ VECTORIEL COLORÉ (À droite)
-        # ---------------------------------------------------------
         fig_map, ax_map = plt.subplots(figsize=(8, 5))
         lats = [pt["lat"] for pt in st.session_state.route]
         lons = [pt["lon"] for pt in st.session_state.route]
         noms = [pt["nom"] for pt in st.session_state.route]
         
-        # Dessin des points
         ax_map.scatter(lons, lats, color='black', zorder=5)
         for i, txt in enumerate(noms):
             ax_map.annotate(txt, (lons[i], lats[i]), textcoords="offset points", xytext=(0,5), ha='center', fontsize=9, fontweight='bold')
             
-        # Attributions dynamiques de couleurs selon la Vz
         vz_color_map = {}
         predefined_colors = ['#e6194B', '#3cb44b', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff']
         color_idx = 0
         
-        # Dessin des branches
         for i in range(len(st.session_state.route) - 1):
             pt1 = st.session_state.route[i]
             pt2 = st.session_state.route[i+1]
@@ -578,21 +579,15 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
             phase = st.session_state.get(f"phase_{pt1['id']}", "Croisière")
             vz = st.session_state.get(f"vz_{pt1['id']}", 0)
             
-            # Formulation du label de légende selon la Vz
             if phase == "Croisière":
                 label = "Croisière"
-                vz_txt = ""
             elif phase == "Montée":
                 label = f"Montée (+{int(abs(vz))} ft/min)"
-                vz_txt = f"+{int(abs(vz))}"
             elif phase == "Descente":
                 label = f"Descente (-{int(abs(vz))} ft/min)"
-                vz_txt = f"-{int(abs(vz))}"
             else:
                 label = "Local"
-                vz_txt = ""
                 
-            # Assignation de la couleur
             if label not in vz_color_map:
                 if label == "Croisière":
                     vz_color_map[label] = 'blue'
@@ -601,16 +596,11 @@ if len(st.session_state.route) > 1 and len(log_nav_data) > 0 and fig_centrage is
                     color_idx += 1
                     
             couleur = vz_color_map[label]
-            
-            # Tracé de la ligne
             ax_map.plot([lon1, lon2], [lat1, lat2], color=couleur, linewidth=2.5, linestyle='--')
             
-            # Annotation de la vitesse verticale sur la branche
-            if vz_txt:
-                mid_lon, mid_lat = (lon1 + lon2) / 2, (lat1 + lat2) / 2
-                ax_map.annotate(vz_txt, (mid_lon, mid_lat), color=couleur, textcoords="offset points", xytext=(0,5), ha='center', fontsize=6, fontweight='bold', bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=couleur, lw=1, alpha=0.8))
+            # --- SUPPRESSION DES ANNOTATIONS Vz SUR LE GRAPHIQUE ---
+            # Le texte Vz est retiré ici pour laisser le graphique épuré.
 
-        # Création dynamique de la légende déportée
         legend_handles = []
         for label, color in vz_color_map.items():
             legend_handles.append(mlines.Line2D([], [], color=color, linestyle='--', label=label))
